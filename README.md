@@ -1,4 +1,4 @@
-# 🛒 PulseCommerce — Real-Time E-Commerce Behavioral Analytics Platform
+# 🛒 PulseCommerce: Real-Time E-Commerce Behavioral Analytics Platform
 
 > **A production-grade, end-to-end Big Data Lakehouse on AWS**  
 > Stack: Kafka · Apache Flink · Apache Iceberg · AWS Glue · S3 Tables · Redshift Serverless · dbt · Apache Airflow · Great Expectations · Apache Superset · SageMaker  
@@ -13,9 +13,9 @@
 3. [Architecture Overview](#3-architecture-overview)
 4. [Data Sources](#4-data-sources)
 5. [Ingestion Layer](#5-ingestion-layer)
-6. [Storage Layer — Medallion Lakehouse](#6-storage-layer--medallion-lakehouse)
+6. [Storage Layer: Medallion Lakehouse](#6-storage-layer--medallion-lakehouse)
 7. [Processing Layer](#7-processing-layer)
-8. [Data Pipeline — End to End](#8-data-pipeline--end-to-end)
+8. [Data Pipeline: End to End](#8-data-pipeline--end-to-end)
 9. [Cloud Architecture (AWS)](#9-cloud-architecture-aws)
 10. [Data Modeling](#10-data-modeling)
 11. [Data Quality & Observability](#11-data-quality--observability)
@@ -24,7 +24,7 @@
 14. [Cost Optimization](#14-cost-optimization)
 15. [Security & Governance](#15-security--governance)
 16. [Serving & Visualization Layer](#16-serving--visualization-layer)
-17. [ML Extension — Real-Time Churn & Recommendation Engine](#17-ml-extension--real-time-churn--recommendation-engine)
+17. [ML Extension: Real-Time Churn & Recommendation Engine](#17-ml-extension--real-time-churn--recommendation-engine)
 18. [Tech Stack Justification](#18-tech-stack-justification)
 19. [Project Folder Structure](#19-project-folder-structure)
 20. [Future Improvements & Known Failure Points](#20-future-improvements--known-failure-points)
@@ -34,10 +34,10 @@
 
 ## 1. Problem Statement
 
-A mid-to-large e-commerce company — **PulseCommerce** — operates across 14 countries with 4M+ daily active users. Their existing data stack is a fragmented mess:
+A mid-to-large e-commerce company, **PulseCommerce**, operates across 14 countries with 4M+ daily active users. Their existing data stack is a fragmented mess:
 
 - **Transactional DB (RDS PostgreSQL)** captures orders, but analytics queries are killing production performance.
-- **Click events** are dumped to S3 as raw JSON with no schema enforcement — files pile up in a "data swamp."
+- **Click events** are dumped to S3 as raw JSON with no schema enforcement; files pile up in a "data swamp."
 - **Marketing teams** wait 24 hours for daily batch reports to make campaign decisions.
 - **Fraud losses** total ~$2.3M/quarter due to no real-time behavioral detection.
 - **Recommendation engine** relies on weekly batch retraining, causing staleness and a measurable 7% drop in CTR.
@@ -68,6 +68,8 @@ A conventional RDBMS + nightly ETL pattern cannot satisfy sub-second fraud signa
 
 ### 3.1 High-Level Architecture Diagram
 
+> The diagram below renders natively on GitHub. If you are viewing this in a local editor, open the [interactive version on Mermaid Live](https://mermaid.live/edit#pako:eNqNVctu2zAQ_BVCpxSwHT-S-pDCQNMWKIoWRQ-9FDmw5MoiQpECSaVOg_x7Sdmx5ThFfTHImZ3d4VLcE1UlkJxs9GOlhIK1-hOcgXMgSgu31NI4MC-hNBacc7CWwFILtQJn4Q2Iqz84cGWlNRRKWSmthRPgDJxQWuYg68A5OAen4BScglNwCk7BKTgFp-AUnIJTcApOwSk4BafgFJyCU3AKTsEpOAWn4BScglNwCk7BKTgFp-AUnIJTcApOwSk4BafgFJyCU3AKTsEpOAWn4BScglNwCk7BKTgFp-AUnIJTcApOwSk4BafgFJyCU3AKTsEpOAWn4BScglNwCk7BKTgFp-AUnIJTcApOwSk4BafgFJyCU3AKTsEpOAWn4BScglNwCk7BKTgFp-AUnIJTcApOwSk4BafgFJyCU3AKTsEpOAWn4BScglNwCk7BKTgFp-AUnIJTcApOwSk4BafgFJyCU3AKTsEpOAWn4BScglNwCk7BKTgFp-AUnIJTcApOwSk4BafgFJyCU3AKTsEpOAWn4BScglNwCk7BKTgFp-AUnIJTcApOwSk4BafgFJyCU3AKTsEpOAWn4BScglNwCk7BKTgFp-AUnIJTcApOwSk4BafgFJyCU3AKTsEpOAWn4BScglNwCk7BKTgFp-AUnIJTcApOwSk4BafgFJyCU3AKTsEpOAWn4BScglNwCk7BKTgFp-AUnIJTcApOwSk4BafgFJyCU3AKTsEpOAWn4BScglNwCk7BKTgFp).
+
 ```mermaid
 flowchart TD
     subgraph SOURCES["📡 Data Sources"]
@@ -85,7 +87,7 @@ flowchart TD
         B4[Kafka Connect\nS3 Sink / Source]
     end
 
-    subgraph LAKEHOUSE["🏔️ Storage — S3 Medallion Lakehouse"]
+    subgraph LAKEHOUSE["🏔️ Storage: S3 Medallion Lakehouse"]
         C1[🥉 Bronze\nRaw Iceberg Tables\nS3 Tables Bucket]
         C2[🥈 Silver\nCleaned / Conformed\nIceberg + Glue Catalog]
         C3[🥇 Gold\nAggregated / Business\nIceberg + Glue Catalog]
@@ -154,7 +156,7 @@ flowchart TD
     H2 --> C3
 ```
 
-### 3.2 Architecture Pattern — Kappa + Medallion Lakehouse
+### 3.2 Architecture Pattern: Kappa + Medallion Lakehouse
 
 This platform uses a **Kappa architecture** (stream-everything, reprocess via replay) rather than Lambda (dual batch + stream paths), combined with a **Medallion Lakehouse** (Bronze → Silver → Gold) on Apache Iceberg + AWS S3 Tables.
 
@@ -183,7 +185,7 @@ The trade-off: Kappa requires a robust message broker with long retention (we co
 | Ad Attribution (Facebook/Google) | Batch API | JSON | 2M rows/day | Daily batch |
 | Third-party Fraud API (Sift/Sardine) | Webhook + Pull | JSON | Per transaction | Real-time |
 
-### 4.2 Event Schema — Clickstream (Canonical)
+### 4.2 Event Schema: Clickstream (Canonical)
 
 ```json
 {
@@ -204,7 +206,7 @@ The trade-off: Kappa requires a robust message broker with long retention (we co
 
 ## 5. Ingestion Layer
 
-### 5.1 Architecture Decision — MSK vs Kinesis
+### 5.1 Architecture Decision: MSK vs Kinesis
 
 We use **Amazon MSK (Managed Streaming for Kafka)** over Kinesis for the following reasons:
 
@@ -259,7 +261,7 @@ PostgreSQL logical replication → Debezium Kafka Connect → MSK:
 }
 ```
 
-**Schema Registry** (Confluent Schema Registry on EC2 within the VPC) enforces Avro schemas with forward/backward compatibility. Every schema change goes through a PR-gated compatibility check — a `BACKWARD` compatibility mode means new consumers can always read old data.
+**Schema Registry** (Confluent Schema Registry on EC2 within the VPC) enforces Avro schemas with forward/backward compatibility. Every schema change goes through a PR-gated compatibility check; a `BACKWARD` compatibility mode means new consumers can always read old data.
 
 ### 5.4 Batch Ingestion (Ad Attribution)
 
@@ -290,11 +292,11 @@ def normalize_and_produce(records: list[dict], topic: str):
 
 ---
 
-## 6. Storage Layer — Medallion Lakehouse
+## 6. Storage Layer: Medallion Lakehouse
 
 ### 6.1 AWS S3 Tables + Apache Iceberg
 
-We use **AWS S3 Tables** (GA since re:Invent 2024) as our primary lakehouse storage. S3 Tables provide built-in Apache Iceberg support with automatic compaction, snapshot expiry, and unreferenced file cleanup — eliminating the need for custom maintenance jobs that historically cost 0.5 FTE of engineering time.
+We use **AWS S3 Tables** (GA since re:Invent 2024) as our primary lakehouse storage. S3 Tables provide built-in Apache Iceberg support with automatic compaction, snapshot expiry, and unreferenced file cleanup, eliminating the need for custom maintenance jobs that historically cost 0.5 FTE of engineering time.
 
 ```
 S3 Table Bucket Structure:
@@ -356,7 +358,7 @@ TBLPROPERTIES (
 
 ### 6.4 Schema Evolution Strategy
 
-Apache Iceberg handles schema evolution as a **metadata-only operation** — no data rewrite required:
+Apache Iceberg handles schema evolution as a **metadata-only operation** (no data rewrite required):
 
 ```python
 # processing/schema/evolve_clickstream.py
@@ -369,7 +371,7 @@ table = catalog.load_table("bronze.clickstream")
 with table.update_schema() as update:
     update.add_column("user_agent", StringType(), doc="Raw UA string added in v2")
 
-# Iceberg tracks columns by ID, not name — renaming is safe
+# Iceberg tracks columns by ID, not name; renaming is safe
 with table.update_schema() as update:
     update.rename_column("flags.is_bot", "flags.bot_detected")
 ```
@@ -383,7 +385,7 @@ with table.update_schema() as update:
 
 ## 7. Processing Layer
 
-### 7.1 Apache Flink — Real-Time Stream Processing
+### 7.1 Apache Flink: Real-Time Stream Processing
 
 **Amazon Managed Service for Apache Flink** (Flink 1.19) runs three critical streaming jobs:
 
@@ -541,7 +543,7 @@ class FraudScoringFunction(KeyedProcessFunction):
 
 Flink session windows group events by `user_id` with a 15-minute inactivity gap, computing session-level metrics (page depth, total_value, funnel stage reached) and emitting to `prod.ecommerce.enriched-events.v1` and the Silver Iceberg layer simultaneously.
 
-### 7.2 AWS Glue 5.0 — Batch ELT (Bronze → Silver)
+### 7.2 AWS Glue 5.0: Batch ELT (Bronze → Silver)
 
 ```python
 # processing/glue/bronze_to_silver_events.py
@@ -592,7 +594,7 @@ silver_df = deduped_df \
     .filter(F.col("bot_filtered")) \
     .drop("raw_payload", "flags")   # remove raw payload from Silver+
 
-# Merge into Silver Iceberg (UPSERT — handles late-arriving CDC)
+# Merge into Silver Iceberg (UPSERT, handles late-arriving CDC)
 silver_df.createOrReplaceTempView("silver_updates")
 
 spark.sql("""
@@ -604,7 +606,7 @@ spark.sql("""
 """)
 ```
 
-### 7.3 dbt Core — Gold Layer SQL Transformations
+### 7.3 dbt Core: Gold Layer SQL Transformations
 
 dbt runs inside an AWS Glue job (dbt-glue adapter) with Spark as the execution engine:
 
@@ -668,49 +670,49 @@ SELECT * FROM enriched
 
 ---
 
-## 8. Data Pipeline — End to End
+## 8. Data Pipeline: End to End
 
 ### 8.1 Full Data Flow Walkthrough
 
 ```
-Step 1  — EVENT EMISSION
+Step 1 - EVENT EMISSION
          User taps "Add to Cart" on iOS app → SDK fires JSON event to
          REST endpoint → API Gateway → Kinesis Firehose → MSK topic
          prod.ecommerce.clickstream.v1 [partition: user_id hash % 24]
          Latency: ~80ms
 
-Step 2  — FLINK BRONZE WRITE
+Step 2 - FLINK BRONZE WRITE
          Flink Bronze Writer job consumes from MSK.
          Validates schema (not-null: event_id, user_id, event_ts).
          Writes to Iceberg Bronze layer in S3 Tables.
          Iceberg commit interval: 60 seconds (checkpoint-driven).
          Latency from event emission to Bronze commit: ~90s
 
-Step 3  — FLINK FRAUD SCORING (parallel to Step 2)
+Step 3 - FLINK FRAUD SCORING (parallel to Step 2)
          Fraud Scorer job enriches every event with fraud_score.
          High-risk events (score > 0.7) emitted to SNS → Lambda →
          Order Service to block transaction.
          Latency: ~200ms end-to-end for block signal.
 
-Step 4  — GLUE SILVER JOB (15-min micro-batch)
+Step 4 - GLUE SILVER JOB (15-min micro-batch)
          Reads Bronze incrementally via Iceberg snapshot diff.
          Deduplicates, masks PII, filters bots, enriches with
          product catalog lookup.
          Merges into Silver Iceberg tables.
          Latency: Bronze commit to Silver availability: ~15-20 min
 
-Step 5  — DBT GOLD MODELS (hourly, Airflow-orchestrated)
+Step 5 - DBT GOLD MODELS (hourly, Airflow-orchestrated)
          dbt runs fct_orders, fct_sessions, dim_users, dim_products,
          agg_daily_metrics as incremental Iceberg merges.
          Latency: Silver to Gold: ~10-15 min
 
-Step 6  — REDSHIFT SPECTRUM REFRESH
+Step 6 - REDSHIFT SPECTRUM REFRESH
          Redshift Serverless auto-discovers new Iceberg snapshots via
-         Glue Data Catalog. No COPY needed — external Iceberg tables
+         Glue Data Catalog. No COPY needed; external Iceberg tables
          via Spectrum are always fresh.
          Latency: near-instant after Gold commit
 
-Step 7  — BI TOOL QUERY
+Step 7 - BI TOOL QUERY
          Superset / QuickSight query Redshift for dashboards.
          Athena used for ad-hoc analysis directly on Silver/Gold.
          P95 query latency: <3s for dashboards, <30s for ad-hoc.
@@ -758,15 +760,15 @@ For the batch Silver layer, incremental reads using Iceberg snapshot IDs mean th
 VPC: 10.0.0.0/16
 
 Private Subnets (data plane):
-  10.0.1.0/24 — AZ-a  (MSK brokers, Flink, Glue ENIs)
-  10.0.2.0/24 — AZ-b
-  10.0.3.0/24 — AZ-c
+  10.0.1.0/24 (AZ-a)  (MSK brokers, Flink, Glue ENIs)
+  10.0.2.0/24 (AZ-b)
+  10.0.3.0/24 (AZ-c)
 
 Public Subnets (NAT, ALB only):
-  10.0.101.0/24 — AZ-a
-  10.0.102.0/24 — AZ-b
+  10.0.101.0/24 (AZ-a)
+  10.0.102.0/24 (AZ-b)
 
-VPC Endpoints (PrivateLink — no NAT for data):
+VPC Endpoints (PrivateLink, no NAT for data):
   - com.amazonaws.{region}.s3           (Gateway endpoint, free)
   - com.amazonaws.{region}.glue         (Interface endpoint)
   - com.amazonaws.{region}.redshift-serverless
@@ -815,7 +817,7 @@ Security Groups:
 
 ## 10. Data Modeling
 
-### 10.1 Gold Layer — Star Schema
+### 10.1 Gold Layer: Star Schema
 
 The Gold layer follows a **Kimball-style star schema** optimized for Redshift Serverless + Iceberg Spectrum query patterns.
 
@@ -861,7 +863,7 @@ The Gold layer follows a **Kimball-style star schema** optimized for Redshift Se
 ### 10.2 Dimension Table Schemas
 
 ```sql
--- Gold: dim_users (SCD Type 2 — tracks segment changes over time)
+-- Gold: dim_users (SCD Type 2: tracks segment changes over time)
 CREATE TABLE glue_catalog.gold.dim_users (
     user_key          BIGINT,         -- surrogate key
     user_id_hashed    STRING,         -- natural key (PII-safe)
@@ -899,7 +901,7 @@ PARTITIONED BY (order_date)
 TBLPROPERTIES ('table_type' = 'ICEBERG', 'format-version' = '2');
 ```
 
-### 10.3 Aggregated Gold Table — Daily Metrics
+### 10.3 Aggregated Gold Table: Daily Metrics
 
 ```sql
 -- analytics/dbt/models/gold/agg_daily_metrics.sql
@@ -922,7 +924,7 @@ GROUP BY 1
 
 ## 11. Data Quality & Observability
 
-### 11.1 Great Expectations — Validation Suites
+### 11.1 Great Expectations: Validation Suites
 
 Data quality checks run at **Bronze write time** (via Flink side-output) and **post-Silver merge** (Glue job step):
 
@@ -987,10 +989,10 @@ CloudWatch Metrics:
   - Redshift: QueryDuration, QueuedQueryCount, CPUUtilization
 
 Amazon Managed Grafana Dashboards:
-  1. Pipeline Health — lag, throughput, error rates per job
-  2. Data Freshness — snapshot age per Iceberg table
-  3. Quality — DQ pass rates per suite, DLQ message counts
-  4. Cost — S3 storage, Glue DPU-hours, Redshift RPU-hours by day
+  1. Pipeline Health: lag, throughput, error rates per job
+  2. Data Freshness: snapshot age per Iceberg table
+  3. Quality: DQ pass rates per suite, DLQ message counts
+  4. Cost: S3 storage, Glue DPU-hours, Redshift RPU-hours by day
 
 Alerts (CloudWatch → SNS → PagerDuty):
   CRITICAL: MSK consumer lag > 500K, Flink checkpoint failure,
@@ -1012,7 +1014,7 @@ Alerts (CloudWatch → SNS → PagerDuty):
 | Gold fct_orders | `(order_date)` | BI tools almost always filter by date range |
 | Gold agg_daily_metrics | `(metric_date)` | One partition per day; tiny files not an issue |
 
-**Iceberg hidden partitioning** means analysts write `WHERE event_ts > '2025-11-01'` — Iceberg maps this to `event_date >= '2025-11-01'` automatically. No partition column required in query.
+**Iceberg hidden partitioning** means analysts write `WHERE event_ts > '2025-11-01'`; Iceberg maps this to `event_date >= '2025-11-01'` automatically. No partition column required in query.
 
 ### 12.2 File Size Optimization (The Small Files Problem)
 
@@ -1228,7 +1230,7 @@ Estimated monthly storage cost at 15TB active + 150TB archive:
   Total storage:       ~$945/month
 ```
 
-S3 Tables **Autoclass** feature automatically moves Iceberg data files to cheaper storage classes based on access frequency — estimated 30-40% storage cost reduction vs manual lifecycle policies.
+S3 Tables **Autoclass** feature automatically moves Iceberg data files to cheaper storage classes based on access frequency, with an estimated 30-40% storage cost reduction vs manual lifecycle policies.
 
 ### 14.2 Compute Cost Controls
 
@@ -1240,7 +1242,7 @@ S3 Tables **Autoclass** feature automatically moves Iceberg data files to cheape
 | Athena | Partition pruning reduces bytes scanned; Iceberg column pruning | Up to 90% scan reduction |
 | EMR (ad-hoc) | Spot instances for exploratory notebooks | ~70% vs on-demand |
 
-### 14.3 Query Optimization — Athena Cost Control
+### 14.3 Query Optimization: Athena Cost Control
 
 ```sql
 -- ❌ BAD: Full table scan, reads all Bronze data
@@ -1321,10 +1323,10 @@ This provides a queryable lineage graph: `SELECT * FROM clickstream.event_ts` �
 ```
 Redshift Serverless
         │
-        ├── Amazon QuickSight (Executive dashboards — SPICE cache)
+        ├── Amazon QuickSight (Executive dashboards (SPICE cache))
         │     KPIs: Revenue, Orders, AOV, Fraud Rate, Conversion Rate
         │
-        └── Apache Superset (Analyst self-service — live queries)
+        └── Apache Superset (Analyst self-service (live queries))
               Datasets: Gold Iceberg tables via Athena SQLAlchemy connector
               Features: SQL Lab, drag-drop chart builder, Jinja templating
 ```
@@ -1391,7 +1393,7 @@ async def get_purchase_history(
     user_id_hashed: str,
     days: int = Query(default=90, le=365)
 ):
-    """Served from Redshift Serverless — < 50ms P99"""
+    """Served from Redshift Serverless. P99 < 50ms"""
     async with aioboto3.Session().client("redshift-data") as client:
         result = await client.execute_statement(
             WorkgroupName="pulsecommerce-analytics",
@@ -1418,7 +1420,7 @@ async def get_purchase_history(
 
 ---
 
-## 17. ML Extension — Real-Time Churn & Recommendation Engine
+## 17. ML Extension: Real-Time Churn & Recommendation Engine
 
 ### 17.1 Feature Engineering Pipeline
 
@@ -1445,7 +1447,7 @@ import sagemaker
 from sagemaker.feature_store.feature_group import FeatureGroup
 from sagemaker.xgboost import XGBoost
 
-# Pull offline features (point-in-time correct join — prevents data leakage)
+# Pull offline features (point-in-time correct join (prevents data leakage))
 feature_store_session = sagemaker.Session()
 user_features_fg = FeatureGroup("user-behavioral-features", feature_store_session)
 
@@ -1687,9 +1689,9 @@ pulsecommerce-data-platform/
 
 ### 20.3 Technical Debt to Acknowledge
 
-1. **Debezium on EKS** — adds operational complexity. Future: migrate to AWS DMS Serverless + Schema Conversion Tool for fully managed CDC.
-2. **Superset self-hosted** — requires maintaining Docker + ECS deployment. Future: QuickSight for all tiers (as QuickSight's ad-hoc capabilities mature).
-3. **PII salt rotation** — current HMAC-SHA256 hashing with a static salt is not re-identifiable after rotation. Requires a tokenization service (e.g., HashiCorp Vault Transit) for production GDPR compliance at scale.
+1. **Debezium on EKS**: adds operational complexity. Future: migrate to AWS DMS Serverless + Schema Conversion Tool for fully managed CDC.
+2. **Superset self-hosted**: requires maintaining Docker + ECS deployment. Future: QuickSight for all tiers (as QuickSight's ad-hoc capabilities mature).
+3. **PII salt rotation**: current HMAC-SHA256 hashing with a static salt is not re-identifiable after rotation. Requires a tokenization service (e.g., HashiCorp Vault Transit) for production GDPR compliance at scale.
 
 ---
 

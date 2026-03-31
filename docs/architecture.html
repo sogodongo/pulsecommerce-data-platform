@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PulseCommerce - Platform Architecture</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      padding: 32px 24px;
+    }
+
+    header {
+      max-width: 1100px;
+      margin: 0 auto 40px;
+      border-bottom: 1px solid #30363d;
+      padding-bottom: 24px;
+    }
+
+    header h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: #f0f6fc;
+      letter-spacing: -0.5px;
+    }
+
+    header p {
+      margin-top: 8px;
+      color: #8b949e;
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+
+    header .stack {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    header .badge {
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 20px;
+      padding: 3px 12px;
+      font-size: 0.78rem;
+      color: #58a6ff;
+    }
+
+    .diagram-container {
+      max-width: 1100px;
+      margin: 0 auto;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 32px;
+      overflow-x: auto;
+    }
+
+    .diagram-container h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 24px;
+    }
+
+    .mermaid {
+      display: flex;
+      justify-content: center;
+    }
+
+    .legend {
+      max-width: 1100px;
+      margin: 32px auto 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+    }
+
+    .legend-item {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .legend-item h3 {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #f0f6fc;
+      margin-bottom: 6px;
+    }
+
+    .legend-item p {
+      font-size: 0.78rem;
+      color: #8b949e;
+      line-height: 1.5;
+    }
+
+    footer {
+      max-width: 1100px;
+      margin: 40px auto 0;
+      padding-top: 24px;
+      border-top: 1px solid #30363d;
+      font-size: 0.8rem;
+      color: #6e7681;
+      text-align: center;
+    }
+
+    footer a { color: #58a6ff; text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>PulseCommerce: Real-Time E-Commerce Behavioral Analytics Platform</h1>
+  <p>Production-grade Kappa + Medallion Lakehouse on AWS. 80K events/sec peak. Sub-500ms fraud detection.</p>
+  <div class="stack">
+    <span class="badge">Apache Kafka (MSK)</span>
+    <span class="badge">Apache Flink 1.19</span>
+    <span class="badge">Apache Iceberg v2</span>
+    <span class="badge">AWS Glue 5.0</span>
+    <span class="badge">Redshift Serverless</span>
+    <span class="badge">dbt Core</span>
+    <span class="badge">Apache Airflow (MWAA)</span>
+    <span class="badge">SageMaker</span>
+    <span class="badge">Great Expectations</span>
+    <span class="badge">Terraform</span>
+    <span class="badge">FastAPI</span>
+  </div>
+</header>
+
+<div class="diagram-container">
+  <h2>High-Level Architecture</h2>
+  <div class="mermaid">
+flowchart TD
+    subgraph SOURCES["Data Sources"]
+        A1["Web / Mobile\nClickstream SDK"]
+        A2["PostgreSQL RDS\nOrders CDC"]
+        A3["Product Catalog\nREST API"]
+        A4["Ad Attribution\nFacebook / Google"]
+        A5["Fraud Signals\n3rd Party API"]
+    end
+
+    subgraph INGESTION["Ingestion Layer"]
+        B1["Amazon MSK\nKafka Topics"]
+        B2["Debezium\nCDC Connector"]
+        B3["AWS Lambda\nAPI Poller"]
+        B4["Kafka Connect\nS3 Sink"]
+    end
+
+    subgraph LAKEHOUSE["Storage: S3 Medallion Lakehouse"]
+        C1["BRONZE\nRaw Iceberg Tables\nAppend-only"]
+        C2["SILVER\nCleaned + Conformed\nMERGE upserts"]
+        C3["GOLD\nBusiness Aggregates\ndbt models"]
+    end
+
+    subgraph PROCESSING["Processing Layer"]
+        D1["Apache Flink\nManaged Service\nFraud Scoring\nSession Stitching"]
+        D2["AWS Glue 5.0\nSpark 3.5\nBronze to Silver ELT"]
+        D3["dbt Core\nGold Layer SQL\nIncremental models"]
+    end
+
+    subgraph SERVING["Serving Layer"]
+        E1["Redshift Serverless\nGold + Iceberg Spectrum"]
+        E2["Amazon Athena\nAd-hoc SQL"]
+    end
+
+    subgraph ML["ML Platform"]
+        F1["SageMaker\nFeature Store\nOnline + Offline"]
+        F2["SageMaker\nXGBoost Training\nWeekly retrain"]
+        F3["SageMaker\nEndpoints\nReal-time inference"]
+    end
+
+    subgraph VIZ["Visualization and APIs"]
+        G1["Apache Superset\nSelf-service BI"]
+        G2["Amazon QuickSight\nExecutive Dashboards"]
+        G3["FastAPI\nInternal Data API"]
+    end
+
+    subgraph OPS["Ops and Governance"]
+        H1["Amazon MWAA\nAirflow Orchestration"]
+        H2["Glue Data Catalog\nMetadata + Lineage"]
+        H3["Great Expectations\nData Quality"]
+        H4["CloudWatch\nObservability"]
+    end
+
+    A1 --> B1
+    A2 --> B2 --> B1
+    A3 --> B3 --> B1
+    A4 --> B3
+    A5 --> B3
+
+    B1 --> D1
+    B4 --> C1
+
+    D1 --> C1
+    D1 --> F1
+    D1 --> F3
+
+    C1 --> D2 --> C2
+    C2 --> D3 --> C3
+
+    C3 --> E1
+    C2 --> E2
+    C3 --> G1
+    C3 --> G2
+    C3 --> G3
+
+    C2 --> F1 --> F2 --> F3
+
+    H1 --> D2
+    H1 --> D3
+    H3 --> C1
+    H3 --> C2
+    H2 --> C1
+    H2 --> C2
+    H2 --> C3
+
+    style C1 fill:#8B4513,color:#fff,stroke:#A0522D
+    style C2 fill:#4169E1,color:#fff,stroke:#1E3A8A
+    style C3 fill:#DAA520,color:#000,stroke:#B8860B
+    style D1 fill:#1a472a,color:#fff,stroke:#2d6a4f
+    style D2 fill:#1a472a,color:#fff,stroke:#2d6a4f
+    style D3 fill:#1a472a,color:#fff,stroke:#2d6a4f
+  </div>
+</div>
+
+<div class="legend">
+  <div class="legend-item">
+    <h3>Bronze Layer</h3>
+    <p>Raw, immutable, append-only. Written by Flink within 90s of Kafka offset commit. Partitioned by event_date/hour.</p>
+  </div>
+  <div class="legend-item">
+    <h3>Silver Layer</h3>
+    <p>Deduplicated, PII-masked, enriched. MERGE upserts every 15 minutes via Glue Spark. SCD Type 2 for orders.</p>
+  </div>
+  <div class="legend-item">
+    <h3>Gold Layer</h3>
+    <p>Kimball star schema. dbt incremental models. Refreshed hourly. Powers Redshift, Athena, and FastAPI.</p>
+  </div>
+  <div class="legend-item">
+    <h3>Flink Applications</h3>
+    <p>bronze_writer, session_stitcher, fraud_scorer, churn_enrichment. RocksDB state. Exactly-once semantics.</p>
+  </div>
+  <div class="legend-item">
+    <h3>ML Pipeline</h3>
+    <p>23-feature behavioral Feature Store. XGBoost churn model. Weekly retrain with AUC-ROC gate of 0.80.</p>
+  </div>
+  <div class="legend-item">
+    <h3>Orchestration</h3>
+    <p>MWAA Airflow 2.8. Three DAGs: silver_refresh (30-min), gold_models (triggered), churn_retrain (weekly).</p>
+  </div>
+</div>
+
+<footer>
+  <p>
+    Built by <a href="https://github.com/sogodongo">Sam Odongo</a> &middot;
+    <a href="https://github.com/sogodongo/pulsecommerce-data-platform">GitHub Repository</a> &middot;
+    Architecture reflects production patterns as of Q1 2026
+  </p>
+</footer>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    flowchart: { curve: 'basis', padding: 20 },
+    themeVariables: {
+      primaryColor:   '#21262d',
+      primaryBorderColor: '#30363d',
+      primaryTextColor:   '#e6edf3',
+      lineColor:          '#58a6ff',
+      secondaryColor:     '#161b22',
+      tertiaryColor:      '#0d1117'
+    }
+  });
+</script>
+
+</body>
+</html>
