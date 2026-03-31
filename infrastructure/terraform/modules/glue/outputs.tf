@@ -1,0 +1,9 @@
+output "glue_role_arn"       { value = aws_iam_role.glue.arn }
+output "glue_role_name"      { value = aws_iam_role.glue.name }
+output "database_bronze"     { value = aws_glue_catalog_database.bronze.name }
+output "database_silver"     { value = aws_glue_catalog_database.silver.name }
+output "database_gold"       { value = aws_glue_catalog_database.gold.name }
+output "bookmarks_table_name" { value = aws_dynamodb_table.glue_bookmarks.name }
+output "job_events_name"     { value = aws_glue_job.bronze_to_silver_events.name }
+output "job_orders_name"     { value = aws_glue_job.bronze_to_silver_orders.name }
+output "job_products_name"   { value = aws_glue_job.silver_product_catalog.name }
