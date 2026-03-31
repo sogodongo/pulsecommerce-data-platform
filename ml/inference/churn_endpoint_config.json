@@ -1,0 +1,143 @@
+{
+  "_comment": "SageMaker real-time endpoint configuration for PulseCommerce churn inference.",
+  "_notes": [
+    "Used by ChurnEndpointDeployer in ml/training/churn_model.py",
+    "Also referenced in infrastructure/terraform/modules/sagemaker (Phase 11)",
+    "Instance type: ml.c5.xlarge — optimised for XGBoost CPU inference",
+    "Two instances for HA across AZs (min for production)",
+    "Data capture: 10% sample → S3 for drift monitoring"
+  ],
+
+  "EndpointName": "pulsecommerce-churn-v1",
+
+  "EndpointConfig": {
+    "EndpointConfigName": "pulsecommerce-churn-config-v1",
+    "ProductionVariants": [
+      {
+        "VariantName": "primary",
+        "ModelName": "pulsecommerce-churn-model-latest",
+        "InitialInstanceCount": 2,
+        "InstanceType": "ml.c5.xlarge",
+        "InitialVariantWeight": 1.0,
+        "VolumeSizeInGB": null,
+        "AcceleratorType": null
+      }
+    ],
+    "DataCaptureConfig": {
+      "EnableCapture": true,
+      "InitialSamplingPercentage": 10,
+      "DestinationS3Uri": "s3://${LAKEHOUSE_BUCKET}/ml/data-capture/churn/",
+      "KmsKeyId": "${KMS_KEY_ID}",
+      "CaptureOptions": [
+        {"CaptureMode": "Input"},
+        {"CaptureMode": "Output"}
+      ],
+      "CaptureContentTypeHeader": {
+        "CsvContentTypes": ["text/csv"],
+        "JsonContentTypes": ["application/json"]
+      }
+    },
+    "KmsKeyId": "${KMS_KEY_ID}",
+    "Tags": [
+      {"Key": "Project",     "Value": "PulseCommerce"},
+      {"Key": "Component",   "Value": "ChurnInference"},
+      {"Key": "ManagedBy",   "Value": "Terraform"}
+    ]
+  },
+
+  "InferenceSpec": {
+    "ContentType": "text/csv",
+    "AcceptType": "text/csv",
+    "FeatureOrder": [
+      "days_since_last_order",
+      "days_since_last_session",
+      "session_count_7d",
+      "session_count_30d",
+      "order_count_30d",
+      "order_count_90d",
+      "order_frequency_30d",
+      "avg_order_value_usd",
+      "total_ltv_usd",
+      "max_order_value_usd",
+      "discount_usage_rate",
+      "cart_abandonment_rate",
+      "avg_session_duration_s",
+      "avg_pages_per_session",
+      "product_view_count_7d",
+      "preferred_category_encoded",
+      "channel_group_encoded",
+      "avg_fraud_score",
+      "refund_count_90d",
+      "is_gdpr_scope"
+    ],
+    "InputExample": "45,12,3,8,1,4,0.25,62.50,310.00,89.99,0.20,0.30,240,4.5,12,0,4,0.05,0,0",
+    "OutputFormat": "Single float in [0.0, 1.0] — probability of churn within 30 days"
+  },
+
+  "ModelMonitoring": {
+    "DataQualityJobDefinition": {
+      "JobName": "pulsecommerce-churn-data-quality",
+      "BaselineDatasetS3Uri": "s3://${LAKEHOUSE_BUCKET}/ml/baselines/churn/baseline.csv",
+      "OutputS3Uri": "s3://${LAKEHOUSE_BUCKET}/ml/monitoring/churn/data-quality/",
+      "Schedule": "cron(0 * ? * * *)",
+      "InstanceType": "ml.m5.xlarge",
+      "InstanceCount": 1,
+      "VolumeSizeInGB": 20
+    },
+    "ModelQualityJobDefinition": {
+      "JobName": "pulsecommerce-churn-model-quality",
+      "ProblemType": "BinaryClassification",
+      "GroundTruthS3Uri": "s3://${LAKEHOUSE_BUCKET}/ml/ground-truth/churn/",
+      "OutputS3Uri": "s3://${LAKEHOUSE_BUCKET}/ml/monitoring/churn/model-quality/",
+      "Schedule": "cron(0 6 ? * * *)",
+      "Thresholds": {
+        "auc_roc_min": 0.75,
+        "precision_min": 0.60
+      }
+    },
+    "Alerts": {
+      "DataDriftThreshold": 0.20,
+      "ModelQualityDegradationThreshold": 0.05,
+      "SnsTopicArn": "${DATA_QUALITY_SNS_ARN}"
+    }
+  },
+
+  "AutoScaling": {
+    "Enabled": true,
+    "MinCapacity": 2,
+    "MaxCapacity": 8,
+    "TargetInvocationsPerInstance": 1000,
+    "ScaleInCooldownSeconds": 300,
+    "ScaleOutCooldownSeconds": 60
+  },
+
+  "NetworkConfig": {
+    "EnableNetworkIsolation": false,
+    "VpcConfig": {
+      "SecurityGroupIds": ["${SAGEMAKER_SG_ID}"],
+      "Subnets": ["${PRIVATE_SUBNET_1}", "${PRIVATE_SUBNET_2}"]
+    }
+  },
+
+  "InvocationExamples": {
+    "boto3": {
+      "code": [
+        "import boto3",
+        "client = boto3.client('sagemaker-runtime', region_name='us-east-1')",
+        "response = client.invoke_endpoint(",
+        "    EndpointName='pulsecommerce-churn-v1',",
+        "    ContentType='text/csv',",
+        "    Body='45,12,3,8,1,4,0.25,62.50,310.00,89.99,0.20,0.30,240,4.5,12,0,4,0.05,0,0'",
+        ")",
+        "churn_score = float(response['Body'].read())",
+        "# churn_score ∈ [0.0, 1.0] — probability of churning within 30 days"
+      ]
+    },
+    "flink": {
+      "description": "Called by ChurnScoringMapFunction in processing/flink/churn_enrichment.py",
+      "method": "_invoke_endpoint()",
+      "fail_open": true,
+      "lru_cache": "1000 users, 5-minute TTL"
+    }
+  }
+}
