@@ -1,0 +1,129 @@
+{
+  "type": "record",
+  "name": "ClickstreamEvent",
+  "namespace": "com.pulsecommerce.ecommerce.clickstream.v1",
+  "doc": "Canonical clickstream event emitted by Web and Mobile SDKs. Schema compatibility: BACKWARD — new fields must have defaults.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4. Globally unique event identifier used for deduplication in Silver layer."
+    },
+    {
+      "name": "user_id",
+      "type": "string",
+      "doc": "Platform user identifier (e.g. usr_8x72hq). PII — hashed with HMAC-SHA256 in Silver layer."
+    },
+    {
+      "name": "session_id",
+      "type": "string",
+      "doc": "Client-generated session identifier. A session groups events within a single user interaction window."
+    },
+    {
+      "name": "event_type",
+      "type": {
+        "type": "enum",
+        "name": "EventType",
+        "symbols": [
+          "product_view",
+          "add_to_cart",
+          "remove_from_cart",
+          "checkout_start",
+          "checkout_complete",
+          "purchase",
+          "search",
+          "page_view",
+          "wishlist_add",
+          "wishlist_remove"
+        ]
+      },
+      "doc": "Type of user interaction. Used for funnel analysis and session stitching in Flink."
+    },
+    {
+      "name": "timestamp",
+      "type": "string",
+      "doc": "ISO-8601 UTC timestamp of the event (e.g. 2025-11-14T08:42:31.412Z). Client-side clock — may drift; watermark strategy allows 4h late arrivals."
+    },
+    {
+      "name": "device",
+      "type": {
+        "type": "record",
+        "name": "Device",
+        "fields": [
+          { "name": "type",        "type": "string", "doc": "Device category: mobile | tablet | desktop" },
+          { "name": "os",          "type": "string", "doc": "Operating system: iOS | Android | Windows | macOS | Linux" },
+          { "name": "app_version", "type": "string", "doc": "App/SDK version string (e.g. 4.2.1)" },
+          { "name": "user_agent",  "type": ["null", "string"], "default": null, "doc": "Raw User-Agent string. Added in v1.1 — null for older clients." }
+        ]
+      },
+      "doc": "Device metadata captured by the SDK at event time."
+    },
+    {
+      "name": "page",
+      "type": {
+        "type": "record",
+        "name": "Page",
+        "fields": [
+          { "name": "url",      "type": "string",            "doc": "Relative URL of the page/screen where event occurred." },
+          { "name": "referrer", "type": ["null", "string"],  "default": null, "doc": "HTTP Referer or SDK-reported referrer. Null for direct traffic." },
+          { "name": "title",    "type": ["null", "string"],  "default": null, "doc": "Page title or screen name." }
+        ]
+      },
+      "doc": "Page/screen context at the time of the event."
+    },
+    {
+      "name": "product",
+      "type": {
+        "type": "record",
+        "name": "Product",
+        "fields": [
+          { "name": "sku",       "type": ["null", "string"],  "default": null, "doc": "Stock Keeping Unit. Null for non-product events (e.g. page_view, search)." },
+          { "name": "category",  "type": ["null", "string"],  "default": null, "doc": "Top-level product category (e.g. footwear, electronics)." },
+          { "name": "price_usd", "type": ["null", "double"],  "default": null, "doc": "Listed price in USD at the time of the event. Not the final purchase price." },
+          { "name": "quantity",  "type": ["null", "int"],     "default": null, "doc": "Quantity for add_to_cart / purchase events." }
+        ]
+      },
+      "doc": "Product context. All fields nullable for non-product events."
+    },
+    {
+      "name": "geo",
+      "type": {
+        "type": "record",
+        "name": "Geo",
+        "fields": [
+          { "name": "country",  "type": "string",           "doc": "ISO 3166-1 alpha-2 country code (e.g. KE, US, DE)." },
+          { "name": "city",     "type": ["null", "string"], "default": null, "doc": "City name. Masked to MASKED for EU/UK users in Silver layer (GDPR)." },
+          { "name": "timezone", "type": "string",           "doc": "IANA timezone identifier (e.g. Africa/Nairobi, America/New_York)." },
+          { "name": "lat",      "type": ["null", "double"], "default": null, "doc": "Latitude — optional, only from apps with location permission." },
+          { "name": "lon",      "type": ["null", "double"], "default": null, "doc": "Longitude — optional, only from apps with location permission." }
+        ]
+      },
+      "doc": "Geographic context derived from IP geolocation at ingestion time."
+    },
+    {
+      "name": "flags",
+      "type": {
+        "type": "record",
+        "name": "Flags",
+        "fields": [
+          { "name": "is_bot",    "type": "boolean", "default": false, "doc": "True if event origin is classified as bot/crawler. Filtered out in Silver." },
+          { "name": "ab_cohort", "type": ["null", "string"], "default": null, "doc": "A/B experiment cohort the user belongs to (e.g. exp_checkout_v3)." },
+          { "name": "is_internal", "type": "boolean", "default": false, "doc": "True for events from internal PulseCommerce staff. Excluded from analytics." }
+        ]
+      },
+      "doc": "Event-level quality and experiment flags."
+    },
+    {
+      "name": "search_query",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Search term entered by the user. Present only for event_type=search."
+    },
+    {
+      "name": "order_id",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Order identifier. Present only for purchase and checkout_complete events."
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PulseCommerce — Kafka Topic Definitions
+# Naming convention: {environment}.{domain}.{entity}.{version}
+# Deployed via: kafka-topics.sh or Confluent REST API / Terraform MSK module
+# ─────────────────────────────────────────────────────────────────────────────
+
+defaults:
+  replication_factor: 3          # 3-broker MSK cluster, all partitions replicated
+  min_insync_replicas: 2         # at least 2 ISRs before producer acks
+  compression_type: lz4          # LZ4 for low-latency + good compression ratio
+  message_max_bytes: 1048576     # 1 MB max message size
+
+topics:
+
+  # ── Clickstream (Web / Mobile SDK events) ──────────────────────────────────
+  - name: prod.ecommerce.clickstream.v1
+    partitions: 24               # matches Flink parallelism; keys on user_id
+    retention_ms: 604800000      # 7 days on-broker
+    retention_bytes: -1          # unlimited (S3 tiered storage offloads old segments)
+    segment_ms: 3600000          # roll new segment every 1 hour
+    cleanup_policy: delete
+    config:
+      remote.storage.enable: "true"               # MSK Tiered Storage → S3
+      local.retention.ms: "86400000"              # keep 1 day hot on broker
+      local.retention.bytes: "107374182400"       # 100 GB hot per partition
+    description: >
+      Raw clickstream events from Web/Mobile SDK.
+      Partitioned by hash(user_id) % 24 so all events for a user land on the
+      same partition — enables stateful session windowing in Flink without
+      cross-partition joins.
+
+  # ── Orders CDC (Debezium → PostgreSQL RDS) ─────────────────────────────────
+  - name: prod.ecommerce.orders.cdc.v1
+    partitions: 12
+    retention_ms: 604800000      # 7 days
+    retention_bytes: -1
+    segment_ms: 3600000
+    cleanup_policy: delete
+    config:
+      remote.storage.enable: "true"
+      local.retention.ms: "86400000"
+    description: >
+      Change Data Capture stream from PostgreSQL orders, order_items, and users
+      tables via Debezium. Messages are Avro-encoded using the orders_cdc.v1
+      schema. Partition key: order_id for orders, user_id for users table.
+
+  # ── Fraud Signals (3rd-party API: Sift / Sardine) ─────────────────────────
+  - name: prod.ecommerce.fraud-signals.v1
+    partitions: 6
+    retention_ms: 259200000      # 3 days (short — signals are time-sensitive)
+    retention_bytes: -1
+    cleanup_policy: delete
+    description: >
+      Real-time fraud signals ingested from 3rd-party providers (Sift/Sardine)
+      via webhook receiver Lambda. Each record contains a transaction_id,
+      risk_score, and signal_type. Joined with clickstream in Flink by user_id.
+
+  # ── Product Catalog (REST API micro-batch) ─────────────────────────────────
+  - name: prod.ecommerce.product-catalog.v1
+    partitions: 6
+    retention_ms: 604800000      # 7 days
+    cleanup_policy: delete
+    description: >
+      Product catalog updates polled from the internal Product Service REST API
+      every 15 minutes via Lambda. Partition key: sku. Consumed by the Flink
+      enrichment job to annotate clickstream events with current product metadata.
+
+  # ── Ad Attribution (Facebook / Google batch) ───────────────────────────────
+  - name: prod.ecommerce.ad-attribution.v1
+    partitions: 6
+    retention_ms: 604800000      # 7 days
+    cleanup_policy: delete
+    description: >
+      Daily batch of ad attribution data from Facebook Marketing API and Google
+      Ads API, normalised to a canonical schema and produced by the Lambda
+      ad_attribution_producer. Partition key: campaign_id.
+
+  # ── Flink Enriched Events (output topic) ───────────────────────────────────
+  - name: prod.ecommerce.enriched-events.v1
+    partitions: 24               # matches input clickstream partitions
+    retention_ms: 259200000      # 3 days — downstream consumers read fast
+    cleanup_policy: delete
+    description: >
+      Flink session stitcher output: clickstream events enriched with
+      session_id, fraud_score, churn_score, and product metadata.
+      Consumed by Silver Glue job and SageMaker Feature Store writer.
+
+  # ── Dead Letter Queue ──────────────────────────────────────────────────────
+  - name: prod.ecommerce.clickstream.dlq.v1
+    partitions: 6
+    retention_ms: 1209600000     # 14 days — longer for manual investigation
+    cleanup_policy: delete
+    description: >
+      Events that failed Great Expectations critical checks during Flink
+      Bronze write. Ops team reviews daily; valid records are replayed to
+      the main clickstream topic after triage.
+
+  # ── Dev / Staging mirrors (MSK Serverless) ────────────────────────────────
+  - name: dev.ecommerce.clickstream.v1
+    partitions: 4                # reduced for cost in dev
+    retention_ms: 86400000       # 1 day only
+    cleanup_policy: delete
+    description: Development environment clickstream topic.
+
+  - name: staging.ecommerce.clickstream.v1
+    partitions: 12
+    retention_ms: 259200000      # 3 days
+    cleanup_policy: delete
+    description: Staging environment clickstream topic for pre-prod integration tests.

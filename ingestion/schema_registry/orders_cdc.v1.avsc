@@ -1,0 +1,98 @@
+{
+  "type": "record",
+  "name": "OrderCDCEvent",
+  "namespace": "com.pulsecommerce.ecommerce.orders.cdc.v1",
+  "doc": "Debezium CDC envelope for the PostgreSQL orders table. Schema compatibility: BACKWARD.",
+  "fields": [
+    {
+      "name": "before",
+      "type": [
+        "null",
+        {
+          "type": "record",
+          "name": "OrderRecord",
+          "fields": [
+            { "name": "order_id",         "type": "string",           "doc": "UUID — primary key." },
+            { "name": "user_id",          "type": "string",           "doc": "FK to users table. PII — hashed in Silver." },
+            { "name": "status",           "type": "string",           "doc": "Order lifecycle status: pending | confirmed | shipped | delivered | cancelled | refunded." },
+            { "name": "currency",         "type": "string",           "doc": "ISO 4217 currency code (e.g. USD, KES, EUR)." },
+            { "name": "total_amount",     "type": "double",           "doc": "Order total in the order currency." },
+            { "name": "total_amount_usd", "type": "double",           "doc": "Order total converted to USD at creation time FX rate." },
+            { "name": "item_count",       "type": "int",              "doc": "Number of distinct SKUs in the order." },
+            { "name": "shipping_country", "type": ["null", "string"], "default": null, "doc": "ISO 3166-1 alpha-2 shipping destination." },
+            { "name": "promo_code",       "type": ["null", "string"], "default": null, "doc": "Applied promotional code. Null if no promo." },
+            { "name": "payment_method",   "type": "string",           "doc": "Payment method: card | mpesa | paypal | bank_transfer | crypto." },
+            { "name": "fraud_flag",       "type": "boolean",          "default": false, "doc": "Set to true by fraud scoring service post-authorisation." },
+            { "name": "first_cart_at",    "type": ["null", "string"], "default": null, "doc": "ISO-8601 timestamp when first item was added to cart (session linkage)." },
+            { "name": "created_at",       "type": "string",           "doc": "ISO-8601 UTC creation timestamp." },
+            { "name": "updated_at",       "type": "string",           "doc": "ISO-8601 UTC last-update timestamp." }
+          ]
+        }
+      ],
+      "default": null,
+      "doc": "Pre-image of the row. Null for INSERT operations."
+    },
+    {
+      "name": "after",
+      "type": [
+        "null",
+        "OrderRecord"
+      ],
+      "default": null,
+      "doc": "Post-image of the row. Null for DELETE operations."
+    },
+    {
+      "name": "source",
+      "type": {
+        "type": "record",
+        "name": "Source",
+        "fields": [
+          { "name": "version",    "type": "string", "doc": "Debezium connector version." },
+          { "name": "connector",  "type": "string", "doc": "Connector type: postgresql." },
+          { "name": "name",       "type": "string", "doc": "Logical server name: pulsecommerce." },
+          { "name": "ts_ms",      "type": "long",   "doc": "Epoch ms of the database transaction commit." },
+          { "name": "snapshot",   "type": "string", "doc": "Snapshot phase indicator: true | false | last." },
+          { "name": "db",         "type": "string", "doc": "Database name." },
+          { "name": "schema",     "type": "string", "doc": "PostgreSQL schema (public)." },
+          { "name": "table",      "type": "string", "doc": "Source table name (orders | order_items | users)." },
+          { "name": "txId",       "type": ["null", "long"],   "default": null, "doc": "PostgreSQL transaction ID." },
+          { "name": "lsn",        "type": ["null", "long"],   "default": null, "doc": "PostgreSQL Log Sequence Number — used for exactly-once dedup." },
+          { "name": "xmin",       "type": ["null", "long"],   "default": null }
+        ]
+      },
+      "doc": "Debezium source metadata. Used for deduplication (lsn) and ordering (ts_ms)."
+    },
+    {
+      "name": "op",
+      "type": {
+        "type": "enum",
+        "name": "Operation",
+        "symbols": ["c", "u", "d", "r"],
+        "doc": "c=create (INSERT), u=update (UPDATE), d=delete (DELETE), r=read (snapshot)."
+      },
+      "doc": "DML operation type."
+    },
+    {
+      "name": "ts_ms",
+      "type": "long",
+      "doc": "Epoch ms when the Debezium connector processed this event. May lag source.ts_ms during snapshot."
+    },
+    {
+      "name": "transaction",
+      "type": [
+        "null",
+        {
+          "type": "record",
+          "name": "Transaction",
+          "fields": [
+            { "name": "id",                  "type": "string" },
+            { "name": "total_order",         "type": "long" },
+            { "name": "data_collection_order","type": "long" }
+          ]
+        }
+      ],
+      "default": null,
+      "doc": "Transaction metadata for outbox pattern ordering. Null for single-statement transactions."
+    }
+  ]
+}

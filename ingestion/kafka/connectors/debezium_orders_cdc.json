@@ -1,0 +1,66 @@
+{
+  "name": "postgres-orders-cdc",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+
+    "database.hostname": "${env:RDS_HOST}",
+    "database.port": "5432",
+    "database.dbname": "${env:RDS_DBNAME}",
+    "database.user": "${env:RDS_USERNAME}",
+    "database.password": "${env:RDS_PASSWORD}",
+    "database.server.name": "pulsecommerce",
+
+    "plugin.name": "pgoutput",
+    "publication.name": "debezium_pub",
+    "slot.name": "debezium_orders_slot",
+
+    "table.include.list": "public.orders,public.order_items,public.users,public.payments",
+
+    "transforms": "unwrap,addTopicPrefix",
+    "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+    "transforms.unwrap.add.fields": "op,ts_ms,source.ts_ms,source.lsn",
+    "transforms.unwrap.delete.handling.mode": "rewrite",
+    "transforms.unwrap.drop.tombstones": "false",
+    "transforms.addTopicPrefix.type": "org.apache.kafka.connect.transforms.ReplaceField$Value",
+
+    "key.converter": "io.confluent.kafka.serializers.KafkaAvroSerializer",
+    "key.converter.schema.registry.url": "${env:SCHEMA_REGISTRY_URL}",
+    "value.converter": "io.confluent.kafka.serializers.KafkaAvroSerializer",
+    "value.converter.schema.registry.url": "${env:SCHEMA_REGISTRY_URL}",
+    "value.converter.schemas.enable": "true",
+
+    "topic.prefix": "prod.ecommerce",
+    "topic.creation.default.replication.factor": "3",
+    "topic.creation.default.partitions": "12",
+    "topic.creation.default.cleanup.policy": "delete",
+    "topic.creation.default.retention.ms": "604800000",
+
+    "snapshot.mode": "initial",
+    "snapshot.locking.mode": "minimal",
+    "snapshot.isolation.mode": "repeatable_read",
+
+    "decimal.handling.mode": "double",
+    "time.precision.mode": "connect",
+    "timestamp.timezone.converter": "io.debezium.connector.postgresql.PostgresTimestampConverter",
+
+    "heartbeat.interval.ms": "30000",
+    "heartbeat.topics.prefix": "__debezium-heartbeat.pulsecommerce",
+
+    "max.batch.size": "2048",
+    "max.queue.size": "8192",
+    "poll.interval.ms": "500",
+
+    "errors.tolerance": "all",
+    "errors.log.enable": "true",
+    "errors.log.include.messages": "true",
+    "errors.deadletterqueue.topic.name": "prod.ecommerce.cdc.dlq.v1",
+    "errors.deadletterqueue.topic.replication.factor": "3",
+    "errors.deadletterqueue.context.headers.enable": "true",
+
+    "schema.history.internal": "io.debezium.storage.kafka.history.KafkaSchemaHistory",
+    "schema.history.internal.kafka.bootstrap.servers": "${env:MSK_BROKERS}",
+    "schema.history.internal.kafka.topic": "__debezium.schema-history.pulsecommerce",
+
+    "tasks.max": "1"
+  }
+}
