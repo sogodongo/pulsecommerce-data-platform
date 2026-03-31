@@ -1,14 +1,3 @@
--- =============================================================================
--- gold/fct_sessions.sql
--- =============================================================================
--- Fact table: one row per user session.
--- Grain: session_id
--- Keys:  user_key, geo_key, channel_key, date_key
---
--- Materialisation: incremental (merge on session_id)
--- Partition:       session_date
--- =============================================================================
-
 {{
     config(
         materialized          = 'incremental',

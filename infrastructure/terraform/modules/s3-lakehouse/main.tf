@@ -1,15 +1,6 @@
-# =============================================================================
-# modules/s3-lakehouse/main.tf
-# =============================================================================
-# KMS key, S3 Tables bucket (Iceberg), Glue scripts bucket, Flink
-# checkpoints bucket, and Lake Formation data lake settings.
-# =============================================================================
-
 locals {
   name_prefix = "${var.project}-${var.environment}"
 }
-
-# ── KMS key (single key for all at-rest encryption) ──────────────────────────
 
 resource "aws_kms_key" "lakehouse" {
   description             = "PulseCommerce lakehouse encryption key — ${var.environment}"
@@ -50,7 +41,6 @@ resource "aws_kms_alias" "lakehouse" {
   target_key_id = aws_kms_key.lakehouse.key_id
 }
 
-# ── S3 Tables bucket (Iceberg — Bronze/Silver/Gold) ───────────────────────────
 # aws_s3tables_table_bucket is used for S3 Tables (auto-compaction, snapshot mgmt)
 # Falls back to standard S3 + Glue Iceberg if S3 Tables not available in region.
 
@@ -117,8 +107,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "lakehouse" {
   }
 }
 
-# ── Glue scripts bucket ───────────────────────────────────────────────────────
-
 resource "aws_s3_bucket" "glue_scripts" {
   bucket        = var.glue_scripts_bucket_name
   force_destroy = false
@@ -148,8 +136,6 @@ resource "aws_s3_bucket_versioning" "glue_scripts" {
   bucket = aws_s3_bucket.glue_scripts.id
   versioning_configuration { status = "Enabled" }
 }
-
-# ── Flink checkpoints bucket ──────────────────────────────────────────────────
 
 resource "aws_s3_bucket" "flink_checkpoints" {
   bucket        = var.flink_checkpoints_bucket_name
@@ -185,8 +171,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "flink_checkpoints" {
     expiration { days = 7 }
   }
 }
-
-# ── Lake Formation data lake settings ─────────────────────────────────────────
 
 resource "aws_lakeformation_data_lake_settings" "main" {
   admins = [

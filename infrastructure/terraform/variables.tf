@@ -1,7 +1,3 @@
-# =============================================================================
-# infrastructure/terraform/variables.tf
-# =============================================================================
-
 variable "aws_region" {
   description = "AWS region for all resources."
   type        = string
@@ -29,8 +25,6 @@ variable "project" {
   default     = "pulsecommerce"
 }
 
-# ── Networking ────────────────────────────────────────────────────────────────
-
 variable "vpc_cidr" {
   type    = string
   default = "10.0.0.0/16"
@@ -50,8 +44,6 @@ variable "public_subnet_cidrs" {
   type    = list(string)
   default = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
 }
-
-# ── MSK ───────────────────────────────────────────────────────────────────────
 
 variable "msk_kafka_version" {
   type    = string
@@ -83,8 +75,6 @@ variable "schema_registry_url" {
   type        = string
 }
 
-# ── S3 Lakehouse ──────────────────────────────────────────────────────────────
-
 variable "lakehouse_bucket_name" {
   description = "S3 Tables bucket name for Bronze/Silver/Gold Iceberg data."
   type        = string
@@ -104,8 +94,6 @@ variable "kms_key_deletion_days" {
   type    = number
   default = 30
 }
-
-# ── Glue ──────────────────────────────────────────────────────────────────────
 
 variable "glue_database_bronze" {
   type    = string
@@ -132,8 +120,6 @@ variable "glue_max_workers" {
   default = 10
 }
 
-# ── Flink ─────────────────────────────────────────────────────────────────────
-
 variable "flink_parallelism" {
   type    = number
   default = 4
@@ -143,8 +129,6 @@ variable "flink_checkpoint_interval_ms" {
   type    = number
   default = 60000
 }
-
-# ── Redshift Serverless ───────────────────────────────────────────────────────
 
 variable "redshift_workgroup_name" {
   type    = string
@@ -184,8 +168,6 @@ variable "redshift_database_name" {
   default = "analytics"
 }
 
-# ── Alerts ────────────────────────────────────────────────────────────────────
-
 variable "data_quality_sns_topic_name" {
   type    = string
   default = "pulsecommerce-data-quality-alerts"
@@ -196,8 +178,6 @@ variable "alert_email" {
   type        = string
   default     = ""
 }
-
-# ── Tags ──────────────────────────────────────────────────────────────────────
 
 variable "tags" {
   description = "Common tags applied to all resources."

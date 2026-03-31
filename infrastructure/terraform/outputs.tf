@@ -1,9 +1,3 @@
-# =============================================================================
-# infrastructure/terraform/outputs.tf
-# =============================================================================
-
-# ── Networking ────────────────────────────────────────────────────────────────
-
 output "vpc_id" {
   description = "VPC ID."
   value       = module.networking.vpc_id
@@ -13,8 +7,6 @@ output "private_subnet_ids" {
   description = "Private subnet IDs."
   value       = module.networking.private_subnet_ids
 }
-
-# ── S3 ────────────────────────────────────────────────────────────────────────
 
 output "lakehouse_bucket_name" {
   description = "S3 Tables (Iceberg) lakehouse bucket name."
@@ -41,8 +33,6 @@ output "kms_key_id" {
   value       = module.s3_lakehouse.kms_key_id
 }
 
-# ── MSK ───────────────────────────────────────────────────────────────────────
-
 output "msk_bootstrap_brokers_tls" {
   description = "MSK TLS bootstrap broker string."
   value       = module.msk.bootstrap_brokers_tls
@@ -59,8 +49,6 @@ output "msk_zookeeper_connect" {
   value       = module.msk.zookeeper_connect_string
   sensitive   = true
 }
-
-# ── Glue ──────────────────────────────────────────────────────────────────────
 
 output "glue_role_arn" {
   description = "IAM role ARN used by Glue ELT jobs."
@@ -79,8 +67,6 @@ output "glue_database_gold" {
   value = module.glue.database_gold
 }
 
-# ── Flink ─────────────────────────────────────────────────────────────────────
-
 output "flink_role_arn" {
   description = "IAM role ARN used by Managed Flink applications."
   value       = module.flink.flink_role_arn
@@ -97,8 +83,6 @@ output "flink_session_stitcher_app_arn" {
 output "flink_fraud_scorer_app_arn" {
   value = module.flink.fraud_scorer_app_arn
 }
-
-# ── Redshift Serverless ───────────────────────────────────────────────────────
 
 output "redshift_workgroup_endpoint" {
   description = "Redshift Serverless workgroup endpoint."
@@ -118,8 +102,6 @@ output "redshift_role_arn" {
   description = "IAM role ARN attached to Redshift Serverless for S3/Glue access."
   value       = module.redshift_serverless.redshift_role_arn
 }
-
-# ── Alerts ────────────────────────────────────────────────────────────────────
 
 output "sns_alert_topic_arn" {
   description = "SNS topic ARN for data quality and pipeline failure alerts."

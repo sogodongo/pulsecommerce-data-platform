@@ -1,18 +1,3 @@
--- =============================================================================
--- silver/silver_orders_unified.sql
--- =============================================================================
--- Reference model: current-state orders from Silver for Gold consumption.
--- Passes through stg_orders with additional session attribution.
---
--- Session attribution logic:
---   Match order to the user session that was active within 30 minutes of
---   the order's created_at (the session that drove the purchase).
---   If multiple sessions overlap, pick the one that started most recently.
---
--- Materialisation: incremental (merge on order_id)
--- Partition:       order_date
--- =============================================================================
-
 {{
     config(
         materialized          = 'incremental',

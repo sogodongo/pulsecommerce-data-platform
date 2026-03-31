@@ -1,16 +1,7 @@
-# =============================================================================
-# modules/networking/main.tf
-# =============================================================================
-# VPC, subnets (private + public), NAT Gateways, route tables,
-# security groups, and VPC endpoints for S3, Glue, SageMaker, and MSK.
-# =============================================================================
-
 locals {
   name_prefix = "${var.project}-${var.environment}"
   az_count    = length(var.availability_zones)
 }
-
-# ── VPC ───────────────────────────────────────────────────────────────────────
 
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -18,8 +9,6 @@ resource "aws_vpc" "main" {
   enable_dns_support   = true
   tags                 = merge(var.tags, { Name = "${local.name_prefix}-vpc" })
 }
-
-# ── Subnets ───────────────────────────────────────────────────────────────────
 
 resource "aws_subnet" "private" {
   count             = local.az_count
@@ -38,14 +27,10 @@ resource "aws_subnet" "public" {
   tags                    = merge(var.tags, { Name = "${local.name_prefix}-public-${count.index + 1}", Tier = "public" })
 }
 
-# ── Internet Gateway ──────────────────────────────────────────────────────────
-
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
   tags   = merge(var.tags, { Name = "${local.name_prefix}-igw" })
 }
-
-# ── NAT Gateways (one per AZ for HA) ─────────────────────────────────────────
 
 resource "aws_eip" "nat" {
   count  = local.az_count
@@ -60,8 +45,6 @@ resource "aws_nat_gateway" "main" {
   tags          = merge(var.tags, { Name = "${local.name_prefix}-nat-${count.index + 1}" })
   depends_on    = [aws_internet_gateway.main]
 }
-
-# ── Route tables ──────────────────────────────────────────────────────────────
 
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
@@ -93,8 +76,6 @@ resource "aws_route_table_association" "private" {
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private[count.index].id
 }
-
-# ── Security Groups ───────────────────────────────────────────────────────────
 
 resource "aws_security_group" "msk" {
   name        = "${local.name_prefix}-msk-sg"
@@ -165,8 +146,6 @@ resource "aws_security_group" "redshift" {
   }
   tags = merge(var.tags, { Name = "${local.name_prefix}-redshift-sg" })
 }
-
-# ── VPC Endpoints (avoid NAT costs for AWS services) ─────────────────────────
 
 data "aws_region" "current" {}
 

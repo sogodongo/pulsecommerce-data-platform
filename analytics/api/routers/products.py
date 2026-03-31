@@ -1,15 +1,3 @@
-# =============================================================================
-# analytics/api/routers/products.py
-# =============================================================================
-# FastAPI router — product analytics endpoints.
-#
-# Endpoints:
-#   GET /v1/products/{sku}              — product detail + performance metrics
-#   GET /v1/products/top-performers     — top N products by revenue (date range)
-#   GET /v1/products/price-bands        — revenue breakdown by price band
-#   GET /v1/products/category-trends    — daily revenue by category (date range)
-# =============================================================================
-
 from __future__ import annotations
 
 import os
@@ -30,9 +18,6 @@ router = APIRouter()
 REDSHIFT_WORKGROUP = os.environ.get("REDSHIFT_WORKGROUP", "pulsecommerce")
 REDSHIFT_DATABASE = os.environ.get("REDSHIFT_DATABASE", "analytics")
 
-# ---------------------------------------------------------------------------
-# Response models
-# ---------------------------------------------------------------------------
 
 class ProductDetail(BaseModel):
     product_key: str
@@ -44,7 +29,7 @@ class ProductDetail(BaseModel):
     price_band: Literal["budget", "mid", "premium", "luxury"]
     tags: str | None             # pipe-delimited (Redshift-safe)
     is_active: bool
-    # Performance metrics (last 30 days)
+    # last 30 days
     orders_30d: int | None
     revenue_30d_usd: float | None
     unique_buyers_30d: int | None
@@ -76,10 +61,6 @@ class CategoryTrendRow(BaseModel):
     order_count: int
 
 
-# ---------------------------------------------------------------------------
-# Helper: run Redshift query
-# ---------------------------------------------------------------------------
-
 async def _run_redshift_query(client: Any, sql: str) -> list[dict[str, Any]]:
     try:
         stmt = client.execute_statement(
@@ -103,10 +84,6 @@ async def _run_redshift_query(client: Any, sql: str) -> list[dict[str, Any]]:
         raise HTTPException(status_code=503, detail=f"Redshift error: {exc}") from exc
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
 @router.get("/{sku}", response_model=ProductDetail)
 @limiter.limit("120/minute")
 async def get_product(
@@ -114,10 +91,6 @@ async def get_product(
     sku: str,
     redshift: Any = Depends(get_redshift_client),
 ) -> ProductDetail:
-    """
-    Return product detail from `gold.dim_products` combined with 30-day
-    revenue and buyer metrics from `gold.fct_orders`.
-    """
     sql = f"""
         SELECT
             dp.product_key::VARCHAR     AS product_key,
@@ -175,10 +148,6 @@ async def get_top_performers(
     ),
     redshift: Any = Depends(get_redshift_client),
 ) -> list[TopProductRow]:
-    """
-    Return top N products ranked by revenue, order count, or unique buyers
-    within a date range. Backed by `gold.fct_orders` + `gold.dim_products`.
-    """
     rank_col = {
         "revenue": "SUM(fo.total_amount_usd)",
         "orders": "COUNT(fo.order_id)",
@@ -228,10 +197,6 @@ async def get_price_band_breakdown(
     end_date: str = Query("2024-01-31"),
     redshift: Any = Depends(get_redshift_client),
 ) -> list[PriceBandRow]:
-    """
-    Return revenue breakdown by price band (budget / mid / premium / luxury).
-    Includes percentage of total revenue for the period.
-    """
     sql = f"""
         SELECT
             dp.price_band,
@@ -270,10 +235,6 @@ async def get_category_trends(
     category: str | None = Query(None, description="Filter to a specific category"),
     redshift: Any = Depends(get_redshift_client),
 ) -> list[CategoryTrendRow]:
-    """
-    Return daily revenue and order count by product category over a date range.
-    Useful for trend charts in BI dashboards.
-    """
     category_clause = f"AND dp.category = '{category}'" if category else ""
 
     sql = f"""

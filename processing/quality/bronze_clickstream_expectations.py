@@ -1,15 +1,3 @@
-# =============================================================================
-# processing/quality/bronze_clickstream_expectations.py
-# =============================================================================
-# Great Expectations 0.18 validation suite for Bronze clickstream data.
-# Runs inline after Flink BronzeWriter writes each micro-batch partition.
-# Also executed as a post-write Glue step before promoting to Silver.
-#
-# Severity tiers:
-#   CRITICAL  — blocks Silver promotion, routes events to DLQ, raises alert
-#   WARNING   — emits CloudWatch metric, allows promotion with annotation
-# =============================================================================
-
 from __future__ import annotations
 
 import json
@@ -27,10 +15,6 @@ from pyspark.sql import DataFrame, SparkSession
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 SUITE_NAME_CRITICAL = "bronze_clickstream_critical"
 SUITE_NAME_WARNING = "bronze_clickstream_warning"
@@ -61,10 +45,6 @@ VOLUME_WARN_MAX = 5_000_000    # more events = possible loop / replay storm
 CLOUDWATCH_NAMESPACE = "PulseCommerce/DataQuality"
 DLQ_TOPIC = "prod.ecommerce.clickstream.dlq.v1"
 
-# ---------------------------------------------------------------------------
-# Dataclass for validation results
-# ---------------------------------------------------------------------------
-
 @dataclass
 class ValidationResult:
     suite_name: str
@@ -73,11 +53,6 @@ class ValidationResult:
     failed_expectations: list[dict[str, Any]]
     row_count: int
     ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-
-# ---------------------------------------------------------------------------
-# Suite builders
-# ---------------------------------------------------------------------------
 
 def build_critical_suite() -> ExpectationSuite:
     """
@@ -140,7 +115,6 @@ def build_critical_suite() -> ExpectationSuite:
     )
 
     return suite
-
 
 def build_warning_suite() -> ExpectationSuite:
     """
@@ -216,11 +190,6 @@ def build_warning_suite() -> ExpectationSuite:
     )
 
     return suite
-
-
-# ---------------------------------------------------------------------------
-# Validator
-# ---------------------------------------------------------------------------
 
 class BronzeClickstreamValidator:
     """
@@ -385,11 +354,6 @@ class BronzeClickstreamValidator:
         except Exception:
             logger.error("Failed to publish SNS alert", exc_info=True)
 
-
-# ---------------------------------------------------------------------------
-# Glue job entrypoint
-# ---------------------------------------------------------------------------
-
 def run_as_glue_job() -> None:
     """Entrypoint when executed as a Glue ELT post-write validation step."""
     import sys
@@ -430,7 +394,6 @@ def run_as_glue_job() -> None:
             f"CRITICAL data quality failure for partition {partition_ts}. "
             f"Silver promotion blocked. Failed: {result.failed_expectations}"
         )
-
 
 if __name__ == "__main__":
     run_as_glue_job()

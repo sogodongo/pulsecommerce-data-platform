@@ -1,27 +1,3 @@
-# =============================================================================
-# .github/workflows/data-platform-ci.yml
-# =============================================================================
-# PulseCommerce Data Platform — main CI pipeline.
-#
-# Triggers: pull_request (any branch → main), push to main.
-#
-# Jobs (run order):
-#   lint-and-typecheck   → ruff lint, mypy typecheck (parallel)
-#   unit-tests           → pytest unit tests, moto-mocked AWS (needs lint)
-#   dbt-compile          → dbt deps + compile against Glue catalog (needs lint)
-#   gx-ci-suite          → Great Expectations CI runner with local PySpark
-#   docker-build         → Build + scan API Docker image (needs unit-tests)
-#   terraform-validate   → terraform fmt + validate for all modules
-#   integration-gate     → Final pass/fail gate (needs all above)
-#
-# Secrets required (GitHub repository secrets):
-#   AWS_CI_ROLE_ARN        — IAM role assumed via OIDC for Glue/dbt compile
-#   AWS_ACCOUNT_ID
-#   AWS_REGION             (default: us-east-1)
-#   SCHEMA_REGISTRY_URL    — for dbt-glue profile
-#   REDSHIFT_WORKGROUP     — for dbt-glue profile
-# =============================================================================
-
 name: Data Platform CI
 
 on:
@@ -45,10 +21,6 @@ permissions:
   id-token: write    # OIDC token for AWS assume-role
   contents: read
   pull-requests: write
-
-# =============================================================================
-# Jobs
-# =============================================================================
 
 jobs:
 

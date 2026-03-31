@@ -1,15 +1,3 @@
--- =============================================================================
--- staging/stg_clickstream.sql
--- =============================================================================
--- Thin view over silver.enriched_events.
--- Purpose: rename columns to canonical dbt-style names, cast types, and apply
--- the incremental lookback window so all downstream Gold models share a single
--- definition of "what Silver data to include this run."
---
--- Materialisation: view (ephemeral — no physical write)
--- Refreshed: every dbt run (incremental Gold models call this CTE inline)
--- =============================================================================
-
 with source as (
 
     select *

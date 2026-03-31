@@ -1,18 +1,3 @@
-# =============================================================================
-# tests/unit/test_fraud_scorer.py
-# =============================================================================
-# Unit tests for processing/flink/fraud_scorer.py
-#
-# Strategy:
-#   - Tests target the pure Python logic extracted from FraudScoringFunction:
-#     signal detection, score accumulation, score capping, and timer de-dup.
-#   - Flink runtime (KeyedProcessFunction, state descriptors, timers) is mocked
-#     via lightweight stubs — no Flink cluster required.
-#   - SNS publish is mocked; tests assert publish is called on high-risk events
-#     and NOT called on low-risk events.
-#   - boto3 is mocked via moto to avoid real AWS calls.
-# =============================================================================
-
 from __future__ import annotations
 
 import json
@@ -24,11 +9,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Stub out PyFlink imports (not available in CI without a Flink cluster)
-# ---------------------------------------------------------------------------
-
+# PyFlink is not available in CI without a cluster — inject minimal stubs
 def _make_pyflink_stubs():
     """Inject minimal PyFlink stub modules so fraud_scorer.py can be imported."""
     # Top-level package
@@ -85,14 +66,8 @@ def _make_pyflink_stubs():
     ds_mod.StreamExecutionEnvironment = MagicMock()
     ds_mod.CheckpointingMode = MagicMock()
 
-
 _make_pyflink_stubs()
 
-# ---------------------------------------------------------------------------
-# Import the module under test (after stubs are in place)
-# ---------------------------------------------------------------------------
-
-# Patch env vars required at module import time
 import os
 os.environ.setdefault("MSK_BROKERS", "localhost:9092")
 os.environ.setdefault("AWS_REGION", "us-east-1")
@@ -104,11 +79,6 @@ from processing.flink.fraud_scorer import (
     FraudScoringFunction,
     local_hour_from_ts,
 )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _make_event(
     event_type: str = "page_view",
@@ -131,7 +101,6 @@ def _make_event(
         "fraud_score": 0.0,
     })
 
-
 class _MockValueState:
     """Minimal ValueState stub — stores a single value."""
     def __init__(self, initial=None):
@@ -139,7 +108,6 @@ class _MockValueState:
     def value(self): return self._value
     def update(self, v): self._value = v
     def clear(self): self._value = None
-
 
 class _MockTimerService:
     def __init__(self):
@@ -149,7 +117,6 @@ class _MockTimerService:
         if ts in self.registered_timers:
             self.registered_timers.remove(ts)
 
-
 class _MockContext:
     """Stub KeyedProcessFunction.Context."""
     def __init__(self, ts: int):
@@ -158,7 +125,6 @@ class _MockContext:
 
     def timestamp(self): return self._ts
     def timer_service(self): return self._timer_service
-
 
 def _make_scorer(
     count: int = 0,
@@ -179,16 +145,10 @@ def _make_scorer(
     scorer._sns = None
     return scorer
 
-
 def _process(scorer: FraudScoringFunction, event_json: str, ts: int) -> list[dict]:
     ctx = _MockContext(ts)
     results = list(scorer.process_element(event_json, ctx))
     return [json.loads(r) for r in results]
-
-
-# =============================================================================
-# Tests: local_hour_from_ts
-# =============================================================================
 
 class TestLocalHourFromTs:
 
@@ -212,11 +172,6 @@ class TestLocalHourFromTs:
         # Should not raise — returns UTC hour
         hour = local_hour_from_ts(ts_ms, "Invalid/Zone_That_Does_Not_Exist")
         assert hour == 10
-
-
-# =============================================================================
-# Tests: FraudScoringFunction — signal detection
-# =============================================================================
 
 class TestFraudSignals:
 
@@ -351,11 +306,6 @@ class TestFraudSignals:
         results = _process(scorer, event, ts_now)
         assert "CART_OVERFLOW" not in results[0]["fraud_signals"]
 
-
-# =============================================================================
-# Tests: score accumulation and capping
-# =============================================================================
-
 class TestScoreAccumulation:
 
     def test_multiple_signals_accumulate(self):
@@ -388,11 +338,6 @@ class TestScoreAccumulation:
         score_str = str(results[0]["fraud_score"])
         decimal_places = len(score_str.split(".")[-1]) if "." in score_str else 0
         assert decimal_places <= 4
-
-
-# =============================================================================
-# Tests: state updates
-# =============================================================================
 
 class TestStateUpdates:
 
@@ -441,11 +386,6 @@ class TestStateUpdates:
         _process(scorer, event, ts_new)
         assert scorer.session_start_ts_state.value() == ts_new
 
-
-# =============================================================================
-# Tests: timer de-duplication
-# =============================================================================
-
 class TestTimerDeduplication:
 
     def test_cleanup_timer_registered_on_first_event(self):
@@ -483,11 +423,6 @@ class TestTimerDeduplication:
         # ts2 + 900_000 > ts1 + 900_000 → should register new timer
         assert ts2 + 900_000 in ctx.timer_service().registered_timers
 
-
-# =============================================================================
-# Tests: on_timer (state cleanup)
-# =============================================================================
-
 class TestOnTimer:
 
     def test_on_timer_clears_event_count(self):
@@ -519,11 +454,6 @@ class TestOnTimer:
         ctx = _MockContext(ts_now)
         list(scorer.on_timer(ts_now + 900_000, ctx))
         assert scorer.last_event_ts_state.value() == ts_now
-
-
-# =============================================================================
-# Tests: SNS alert behavior
-# =============================================================================
 
 class TestSNSAlert:
 
@@ -585,11 +515,6 @@ class TestSNSAlert:
         if mock_sns.publish.called:
             call_kwargs = mock_sns.publish.call_args[1]
             assert "fraud_score" in call_kwargs.get("MessageAttributes", {})
-
-
-# =============================================================================
-# Tests: malformed input handling
-# =============================================================================
 
 class TestMalformedInput:
 

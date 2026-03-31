@@ -1,16 +1,3 @@
-# =============================================================================
-# modules/flink/main.tf
-# =============================================================================
-# Amazon Managed Service for Apache Flink 1.19 applications:
-#   - bronze_writer       (clickstream Bronze landing)
-#   - session_stitcher    (user session aggregation)
-#   - fraud_scorer        (real-time fraud scoring + SNS)
-#   - churn_enrichment    (churn score enrichment + Feature Store)
-#
-# Each app uses RocksDB incremental checkpoints on S3.
-# CloudWatch alarms on uptime and checkpoint failure.
-# =============================================================================
-
 locals {
   name_prefix = "${var.project}-${var.environment}"
 
@@ -27,8 +14,6 @@ locals {
     "restart-strategy.exponential-delay.max-backoff"     = "5 min"
   }
 }
-
-# ── IAM role for all Flink applications ──────────────────────────────────────
 
 resource "aws_iam_role" "flink" {
   name = "${local.name_prefix}-flink-role"
@@ -127,16 +112,12 @@ resource "aws_iam_role_policy" "flink_data_access" {
   })
 }
 
-# ── CloudWatch log groups ─────────────────────────────────────────────────────
-
 resource "aws_cloudwatch_log_group" "flink" {
   for_each          = toset(["bronze-writer", "session-stitcher", "fraud-scorer", "churn-enrichment"])
   name              = "/aws/kinesis-analytics/${local.name_prefix}-${each.key}"
   retention_in_days = 14
   tags              = var.tags
 }
-
-# ── Flink application factory ─────────────────────────────────────────────────
 
 resource "aws_kinesisanalyticsv2_application" "bronze_writer" {
   name                   = "${local.name_prefix}-bronze-writer"
@@ -304,8 +285,6 @@ resource "aws_kinesisanalyticsv2_application" "fraud_scorer" {
   }
   tags = var.tags
 }
-
-# ── Uptime alarms ─────────────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_metric_alarm" "flink_downtime" {
   for_each = {

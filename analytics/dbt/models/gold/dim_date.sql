@@ -1,11 +1,3 @@
--- =============================================================================
--- gold/dim_date.sql
--- =============================================================================
--- Static date dimension for 2020-01-01 → 2030-12-31 (4018 rows).
--- Generated via Spark sequence — no external seed file needed.
--- Materialisation: table (one-time build, never updated except fiscal calendar changes)
--- =============================================================================
-
 {{
     config(
         materialized    = 'table',

@@ -1,22 +1,3 @@
-"""
-processing/schema/bootstrap.py
-
-One-time DDL bootstrap runner. Creates all Glue databases and Iceberg tables
-across Bronze, Silver, and Gold zones by executing the DDL SQL files via
-PySpark (Glue 5.0 session) or Athena.
-
-Run this once on a fresh environment before deploying any Flink / Glue jobs.
-Idempotent: all statements use CREATE TABLE IF NOT EXISTS.
-
-Usage (local with Glue Dev Endpoint / Glue Interactive Session):
-  python bootstrap.py --zone all --dry-run
-  python bootstrap.py --zone bronze --apply
-  python bootstrap.py --zone all --apply
-
-Usage (as a Glue Job, triggered by Terraform after infra provisioning):
-  Deployed as a one-off Glue job via Terraform null_resource + local-exec.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -43,16 +24,8 @@ WAREHOUSE = os.environ.get("LAKEHOUSE_BUCKET", "s3://pulsecommerce-lakehouse-123
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PySpark / Glue session
-# ─────────────────────────────────────────────────────────────────────────────
-
 def build_spark_session():
-    """
-    Build a PySpark session configured for Iceberg + Glue Data Catalog.
-    In a Glue Job context, SparkContext is pre-initialised — this still works
-    because getOrCreate() returns the existing session.
-    """
+    # getOrCreate() is safe inside a Glue job — it returns the pre-initialised session
     from pyspark.sql import SparkSession
 
     return (
@@ -74,17 +47,10 @@ def build_spark_session():
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SQL parsing — split on semicolons, skip comments
-# ─────────────────────────────────────────────────────────────────────────────
-
 def parse_statements(sql_text: str) -> list[str]:
     """
-    Split a SQL file into individual executable statements.
-    Handles:
-      - Single-line comments (--)
-      - Multi-line block comments (/* ... */)
-      - Quoted string literals containing semicolons
+    Split a SQL file into executable statements.
+    Handles block comments, single-line comments, and quoted semicolons.
     """
     statements: list[str] = []
     current: list[str] = []
@@ -98,7 +64,6 @@ def parse_statements(sql_text: str) -> list[str]:
     while i < len(text):
         c = text[i]
 
-        # Toggle block comments
         if not in_single_quote and text[i:i+2] == "/*":
             in_block_comment = True
             i += 2
@@ -111,17 +76,14 @@ def parse_statements(sql_text: str) -> list[str]:
             i += 1
             continue
 
-        # Skip single-line comments
         if not in_single_quote and text[i:i+2] == "--":
             while i < len(text) and text[i] != "\n":
                 i += 1
             continue
 
-        # Track string literals (to avoid splitting on embedded semicolons)
         if c == "'":
             in_single_quote = not in_single_quote
 
-        # Statement boundary
         if c == ";" and not in_single_quote:
             stmt = "".join(current).strip()
             if stmt:
@@ -133,7 +95,7 @@ def parse_statements(sql_text: str) -> list[str]:
         current.append(c)
         i += 1
 
-    # Catch unterminated last statement (no trailing semicolon)
+    # catch unterminated last statement (no trailing semicolon)
     remainder = "".join(current).strip()
     if remainder:
         statements.append(remainder)
@@ -141,15 +103,7 @@ def parse_statements(sql_text: str) -> list[str]:
     return [s for s in statements if s and not s.isspace()]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Bootstrap execution
-# ─────────────────────────────────────────────────────────────────────────────
-
 def run_ddl_file(spark, ddl_file: Path, dry_run: bool) -> tuple[int, int]:
-    """
-    Execute all statements in a DDL file.
-    Returns (succeeded, failed) counts.
-    """
     logger.info("Processing DDL file: %s", ddl_file)
     sql_text = ddl_file.read_text(encoding="utf-8")
     statements = parse_statements(sql_text)
@@ -174,13 +128,12 @@ def run_ddl_file(spark, ddl_file: Path, dry_run: bool) -> tuple[int, int]:
         except Exception as exc:
             failed += 1
             logger.error("    FAILED: %s", exc)
-            # Don't abort — continue with remaining statements (IF NOT EXISTS makes most safe)
+            # keep going — IF NOT EXISTS makes most statements safe to retry
 
     return succeeded, failed
 
 
 def bootstrap(zones: list[str], dry_run: bool) -> None:
-    """Main bootstrap routine."""
     if dry_run:
         logger.info("=" * 60)
         logger.info("DRY RUN — no DDL will be executed")
@@ -224,10 +177,6 @@ def bootstrap(zones: list[str], dry_run: bool) -> None:
         sys.exit(1)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────────────────────────────────────
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="PulseCommerce schema bootstrap — creates all Iceberg tables via DDL SQL files",
@@ -256,15 +205,8 @@ def main() -> None:
     bootstrap(zones, dry_run=args.dry_run)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Glue Job entrypoint (when run as a Glue job, not CLI)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def glue_handler():
-    """
-    Entrypoint when deployed as an AWS Glue job.
-    Glue passes job parameters via --ZONE and --DRY_RUN job arguments.
-    """
+    # Entrypoint when deployed as a Glue job — zone/dry_run come from job arguments
     from awsglue.utils import getResolvedOptions
 
     args = getResolvedOptions(sys.argv, ["ZONE", "DRY_RUN"])
@@ -275,7 +217,6 @@ def glue_handler():
 
 
 if __name__ == "__main__":
-    # Detect if running as Glue job (sys.argv contains --JOB_NAME)
     if "--JOB_NAME" in sys.argv:
         glue_handler()
     else:

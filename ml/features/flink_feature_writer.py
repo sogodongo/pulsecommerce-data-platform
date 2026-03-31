@@ -1,25 +1,3 @@
-# =============================================================================
-# ml/features/flink_feature_writer.py
-# =============================================================================
-# Flink MapFunction that writes real-time behavioral features to the
-# SageMaker Feature Store Online store after each order/session event.
-#
-# Integrated into churn_enrichment.py as a post-scoring step:
-#   stream → ChurnScoringMapFunction → FeatureStoreWriterFunction → sink
-#
-# Online store purpose:
-#   - Real-time churn score lookup during active user sessions
-#   - Near-real-time feature freshness (< 1 min lag from event to online store)
-#
-# Write strategy:
-#   - PutRecord via boto3 SageMaker Feature Store Runtime API
-#   - Fail-open: feature write failure does not block event processing
-#   - Deduplication: only writes if feature values have changed by > threshold
-#     (avoids redundant writes for unchanged users — reduces API costs)
-#   - Batching: accumulates records in operator state, flushes on checkpoint
-#     or when batch_size / max_buffer_ms thresholds are reached
-# =============================================================================
-
 from __future__ import annotations
 
 import hashlib
@@ -36,22 +14,13 @@ from pyflink.datastream.state import ValueStateDescriptor
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 FEATURE_GROUP_NAME = os.environ.get("FEATURE_GROUP_NAME", "pulsecommerce-user-behavioral")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
-# Buffer thresholds
-BATCH_SIZE = 50              # flush when buffer reaches this many records
-MAX_BUFFER_MS = 5_000        # flush after this many ms regardless of batch size
+BATCH_SIZE = 50
+MAX_BUFFER_MS = 5_000
 
-# Change detection thresholds (fractional features)
-FLOAT_CHANGE_THRESHOLD = 0.01   # only write if a float feature changed by > 1%
-INT_CHANGE_THRESHOLD = 1        # only write if an integer feature changed
-
-# Features to write on each order event
+# Features to write per event type — keeps PutRecord payload small
 ORDER_EVENT_FEATURES = [
     "days_since_last_order",
     "order_count_30d",
@@ -66,7 +35,6 @@ ORDER_EVENT_FEATURES = [
     "churned_30d",
 ]
 
-# Features to write on each session event
 SESSION_EVENT_FEATURES = [
     "days_since_last_session",
     "session_count_7d",
@@ -77,7 +45,7 @@ SESSION_EVENT_FEATURES = [
     "product_view_count_7d",
 ]
 
-# Static features (written on first encounter, rarely change)
+# Written on first encounter — these rarely change between events
 STATIC_FEATURES = [
     "preferred_category_encoded",
     "channel_group_encoded",
@@ -85,19 +53,10 @@ STATIC_FEATURES = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Feature record builder
-# ---------------------------------------------------------------------------
-
 def build_feature_record(event: dict[str, Any], event_type: str) -> list[dict[str, str]]:
     """
-    Build a SageMaker Feature Store record from a processed event dict.
-    Returns a list of {"FeatureName": ..., "ValueAsString": ...} dicts.
-
-    event must contain:
-      - user_id_hashed
-      - churn_score (from ChurnScoringMapFunction)
-      - All relevant behavioral counters populated by upstream Flink functions
+    Build a Feature Store PutRecord payload from a processed event.
+    event must have user_id_hashed + relevant counters from upstream Flink operators.
     """
     ts = event.get("event_timestamp") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -112,7 +71,6 @@ def build_feature_record(event: dict[str, Any], event_type: str) -> list[dict[st
             val = event.get(feat)
             if val is not None:
                 record.append({"FeatureName": feat, "ValueAsString": str(val)})
-
     elif event_type == "session":
         for feat in SESSION_EVENT_FEATURES:
             val = event.get(feat)
@@ -128,29 +86,16 @@ def build_feature_record(event: dict[str, Any], event_type: str) -> list[dict[st
 
 
 def _record_fingerprint(record: list[dict[str, str]]) -> str:
-    """SHA-256 fingerprint of a feature record for change detection."""
     sorted_items = sorted((r["FeatureName"], r["ValueAsString"]) for r in record)
     return hashlib.sha256(json.dumps(sorted_items).encode()).hexdigest()
 
 
-# ---------------------------------------------------------------------------
-# Flink MapFunction
-# ---------------------------------------------------------------------------
-
 class FeatureStoreWriterFunction(MapFunction):
     """
-    Flink MapFunction that writes enriched events to SageMaker Feature Store Online.
-
-    Keyed by user_id_hashed upstream (ensures all events for a user land on
-    the same task slot, enabling meaningful deduplication state).
-
-    State:
-      - last_fingerprint: SHA-256 of the last written feature record per user.
-        Used to skip redundant writes when features haven't changed.
-      - last_write_ts: epoch ms of last write. Used for max_buffer_ms threshold.
-
-    Pass-through: the input event dict is returned unchanged.
-    Feature Store write is a side-effect, not blocking the main stream.
+    Writes enriched events to SageMaker Feature Store Online as a side-effect.
+    Keyed by user_id_hashed upstream so deduplication state is per-user per slot.
+    Skips writes when the feature fingerprint hasn't changed within MAX_BUFFER_MS.
+    Pass-through: returns the input event unchanged.
     """
 
     def __init__(self, event_type: str = "order") -> None:
@@ -163,7 +108,6 @@ class FeatureStoreWriterFunction(MapFunction):
         self._sm_client = boto3.client(
             "sagemaker-featurestore-runtime", region_name=AWS_REGION
         )
-
         self._last_fingerprint_state = runtime_context.get_state(
             ValueStateDescriptor("last_feature_fingerprint", Types.STRING())
         )
@@ -175,7 +119,6 @@ class FeatureStoreWriterFunction(MapFunction):
         try:
             self._maybe_write(event)
         except Exception:
-            # Fail-open: log and continue
             logger.warning(
                 "FeatureStore write failed for user %s",
                 event.get("user_id_hashed"),
@@ -191,7 +134,6 @@ class FeatureStoreWriterFunction(MapFunction):
         last_ts = self._last_write_ts_state.value() or 0
         now_ms = int(time.time() * 1000)
 
-        # Skip write if fingerprint unchanged AND within buffer window
         if last_fp == fingerprint and (now_ms - last_ts) < MAX_BUFFER_MS:
             return
 
@@ -199,7 +141,6 @@ class FeatureStoreWriterFunction(MapFunction):
             FeatureGroupName=FEATURE_GROUP_NAME,
             Record=record,
         )
-
         self._last_fingerprint_state.update(fingerprint)
         self._last_write_ts_state.update(now_ms)
 
@@ -210,15 +151,8 @@ class FeatureStoreWriterFunction(MapFunction):
         )
 
 
-# ---------------------------------------------------------------------------
-# Standalone batch writer (for backfills / testing)
-# ---------------------------------------------------------------------------
-
 class BatchFeatureStoreWriter:
-    """
-    Synchronous batch writer — used in Glue jobs and tests.
-    Accumulates records up to batch_size, then flushes via PutRecord calls.
-    """
+    """Synchronous batch writer for Glue backfills and tests."""
 
     def __init__(
         self,

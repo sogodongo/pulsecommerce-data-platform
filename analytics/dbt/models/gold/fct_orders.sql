@@ -1,17 +1,3 @@
--- =============================================================================
--- gold/fct_orders.sql
--- =============================================================================
--- Fact table: one row per order (current state).
--- Grain: order_id
--- Keys:  user_key (dim_users), product_key (dim_products),
---        channel_key (dim_channels), geo_key (dim_geography),
---        date_key (dim_date)
---
--- Materialisation: incremental (merge on order_id)
--- Partition:       order_date
--- SLO:             Available within 75 minutes of Silver commit
--- =============================================================================
-
 {{
     config(
         materialized          = 'incremental',

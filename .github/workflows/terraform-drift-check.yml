@@ -1,24 +1,3 @@
-# =============================================================================
-# .github/workflows/terraform-drift-check.yml
-# =============================================================================
-# Scheduled Terraform drift detection — runs daily at 06:00 UTC.
-# Compares live AWS infrastructure against the Terraform state file.
-# Posts results as a GitHub issue comment or creates a new issue on drift.
-#
-# Also runs on:
-#   - Manual workflow_dispatch (for on-demand drift checks)
-#   - Push to main (post-merge validation)
-#
-# Secrets required:
-#   AWS_PROD_ROLE_ARN      — IAM role with ReadOnlyAccess + TF state S3 read
-#   AWS_ACCOUNT_ID
-#   AWS_REGION
-#   TF_STATE_BUCKET        — S3 bucket holding terraform.tfstate
-#   TF_STATE_KEY           — Key path within bucket (e.g. prod/terraform.tfstate)
-#   TF_LOCK_TABLE          — DynamoDB table for state locking
-#   TF_VAR_ADMIN_PASSWORD  — Redshift admin password (sensitive var)
-# =============================================================================
-
 name: Terraform Drift Check
 
 on:

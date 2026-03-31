@@ -1,17 +1,3 @@
--- =============================================================================
--- gold/agg_daily_metrics.sql
--- =============================================================================
--- Pre-aggregated daily KPI table — primary source for executive dashboards.
--- Joins fct_orders + fct_sessions to compute the full business KPI set.
---
--- Redshift Serverless materialises this as a native MV (AUTO REFRESH YES)
--- for sub-second dashboard response times.
---
--- Grain:          one row per metric_date
--- Materialisation: incremental (merge on metric_date) — replaces the day's row
--- Partition:       metric_date
--- =============================================================================
-
 {{
     config(
         materialized          = 'incremental',

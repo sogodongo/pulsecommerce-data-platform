@@ -1,11 +1,3 @@
--- =============================================================================
--- gold/dim_geography.sql
--- =============================================================================
--- Country-level geography dimension with region + GDPR scope flag.
--- Seeded from a static country list; enriched with regional mapping.
--- Materialisation: table (full refresh — static reference data)
--- =============================================================================
-
 {{
     config(
         materialized    = 'table',

@@ -1,18 +1,6 @@
-# =============================================================================
-# modules/redshift-serverless/main.tf
-# =============================================================================
-# Redshift Serverless namespace + workgroup with:
-#   - IAM role for Iceberg Spectrum (S3 + Glue catalog access)
-#   - KMS encryption at rest
-#   - VPC network isolation
-#   - CloudWatch usage alarms (RPU > 400, query duration > 300s)
-# =============================================================================
-
 locals {
   name_prefix = "${var.project}-${var.environment}"
 }
-
-# ── IAM role for Redshift Serverless ─────────────────────────────────────────
 
 resource "aws_iam_role" "redshift" {
   name = "${local.name_prefix}-redshift-role"
@@ -74,8 +62,6 @@ resource "aws_iam_role_policy" "redshift_data_access" {
   })
 }
 
-# ── Redshift Serverless namespace ─────────────────────────────────────────────
-
 resource "aws_redshiftserverless_namespace" "main" {
   namespace_name       = var.namespace_name
   admin_username       = var.admin_username
@@ -89,8 +75,6 @@ resource "aws_redshiftserverless_namespace" "main" {
 
   tags = var.tags
 }
-
-# ── Redshift Serverless workgroup ─────────────────────────────────────────────
 
 resource "aws_redshiftserverless_workgroup" "main" {
   workgroup_name = var.workgroup_name
@@ -121,8 +105,6 @@ resource "aws_redshiftserverless_workgroup" "main" {
 
   depends_on = [aws_redshiftserverless_namespace.main]
 }
-
-# ── Usage alarms ──────────────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_metric_alarm" "rpu_high" {
   alarm_name          = "${local.name_prefix}-redshift-rpu-high"
@@ -159,8 +141,6 @@ resource "aws_cloudwatch_metric_alarm" "query_duration_high" {
 
   tags = var.tags
 }
-
-# ── Glue connection for dbt-glue (Redshift spectrum access) ──────────────────
 
 resource "aws_glue_connection" "redshift" {
   name            = "${local.name_prefix}-redshift-connection"

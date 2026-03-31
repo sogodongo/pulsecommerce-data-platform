@@ -38,9 +38,7 @@ ETAG_TABLE = "pulsecommerce-catalog-etag-cache"   # DynamoDB table for ETag stat
 PAGE_SIZE = 200
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Canonical product record
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class ProductRecord:
@@ -98,9 +96,7 @@ class ProductRecord:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ETag cache (DynamoDB) — skip unchanged pages
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class ETagCache:
     """Persists HTTP ETag / content hashes to DynamoDB to detect catalog changes."""
@@ -123,9 +119,7 @@ class ETagCache:
             logger.warning("ETagCache put failed for key=%s — continuing without cache", key)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Product Catalog API client
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class ProductCatalogClient:
     """
@@ -214,9 +208,7 @@ class ProductCatalogClient:
             cursor = next_cursor
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Change detection — skip records that haven't changed since last run
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class SkuHashCache:
     """Tracks content_hash per SKU in DynamoDB to avoid re-producing unchanged products."""
@@ -244,9 +236,7 @@ class SkuHashCache:
             pass
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Kafka producer
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _build_producer() -> Producer:
     msk_brokers = os.environ["MSK_BROKERS"]
@@ -267,9 +257,7 @@ def _delivery_callback(err, msg) -> None:
         logger.error("Delivery failed sku=%s: %s", msg.key(), err)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Lambda / CLI entrypoint
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def handler(event: dict, context) -> dict:
     """

@@ -1,23 +1,3 @@
-# =============================================================================
-# infrastructure/airflow/dags/churn_model_retrain_dag.py
-# =============================================================================
-# MWAA (Airflow 2.8) DAG — Weekly churn model retrain pipeline.
-#
-# Schedule: every Sunday at 02:00 UTC (low-traffic window).
-# Pipeline:
-#   1. Export training dataset from SageMaker Feature Store (offline store)
-#   2. Launch SageMaker Training Job (XGBoost built-in algorithm)
-#   3. Evaluate model metrics (AUC-ROC >= 0.80 gate)
-#   4. Register model in SageMaker Model Registry
-#   5. Deploy to SageMaker endpoint (blue/green via endpoint config update)
-#   6. Smoke test new endpoint
-#   7. Notify on success / failure
-#
-# Rollback:
-#   If smoke test fails, the previous endpoint config is restored automatically
-#   via the rollback task (trigger_rule=ONE_FAILED on smoke test).
-# =============================================================================
-
 from __future__ import annotations
 
 import json
@@ -39,10 +19,6 @@ from airflow.providers.amazon.aws.operators.sns import SnsPublishOperator
 from airflow.providers.amazon.aws.sensors.sagemaker import SageMakerTrainingSensor
 from airflow.utils.trigger_rule import TriggerRule
 
-# ---------------------------------------------------------------------------
-# Variables
-# ---------------------------------------------------------------------------
-
 AWS_REGION = Variable.get("aws_region", default_var="us-east-1")
 AWS_ACCOUNT_ID = Variable.get("aws_account_id")
 SAGEMAKER_ROLE_ARN = Variable.get("sagemaker_role_arn")
@@ -51,11 +27,9 @@ CHURN_ENDPOINT_NAME = Variable.get("churn_endpoint_name", default_var="pulsecomm
 LAKEHOUSE_BUCKET = Variable.get("lakehouse_bucket")
 SNS_ALERT_ARN = Variable.get("data_quality_sns_arn", default_var="")
 
-# Model quality gate
 MIN_AUC_ROC = float(Variable.get("churn_min_auc_roc", default_var="0.80"))
 MIN_PRECISION = float(Variable.get("churn_min_precision", default_var="0.65"))
 
-# XGBoost hyperparameters
 XGBOOST_HYPERPARAMS = {
     "max_depth": "6",
     "eta": "0.3",
@@ -77,31 +51,25 @@ DEFAULT_ARGS = {
     "retry_delay": timedelta(minutes=15),
 }
 
-# ---------------------------------------------------------------------------
-# Task callables
-# ---------------------------------------------------------------------------
 
 def _export_training_dataset(**ctx: Any) -> dict[str, str]:
     """
-    Export labeled training data from SageMaker Feature Store offline store.
-    Uses Athena query against the offline store S3 path.
-    Returns S3 paths for train/validation splits pushed to XCom.
+    Export labeled training data from Feature Store offline store via Athena.
+    Pushes train/val S3 paths to XCom.
     """
     import logging
     log = logging.getLogger(__name__)
 
-    ds = ctx["ds"]   # YYYY-MM-DD
+    ds = ctx["ds"]
     sm_client = boto3.client("sagemaker", region_name=AWS_REGION)
     athena_client = boto3.client("athena", region_name=AWS_REGION)
 
     # Resolve offline store S3 URI from Feature Group metadata
     fg_meta = sm_client.describe_feature_group(FeatureGroupName=FEATURE_GROUP_NAME)
-    offline_config = fg_meta["OfflineStoreConfig"]
-    offline_s3_uri = offline_config["S3StorageConfig"]["ResolvedOutputS3Uri"]
+    offline_s3_uri = fg_meta["OfflineStoreConfig"]["S3StorageConfig"]["ResolvedOutputS3Uri"]
 
     output_prefix = f"s3://{LAKEHOUSE_BUCKET}/ml/training-data/churn/{ds}/"
 
-    # Athena query: last 90 days of events, labeled with churn flag
     query = f"""
     SELECT
         user_id_hashed,
@@ -130,7 +98,6 @@ def _export_training_dataset(**ctx: Any) -> dict[str, str]:
     )
     execution_id = query_execution["QueryExecutionId"]
 
-    # Poll until complete
     for _ in range(60):
         status = athena_client.get_query_execution(QueryExecutionId=execution_id)
         state = status["QueryExecution"]["Status"]["State"]
@@ -153,10 +120,6 @@ def _export_training_dataset(**ctx: Any) -> dict[str, str]:
 
 
 def _build_training_job_config(**ctx: Any) -> dict[str, Any]:
-    """
-    Construct SageMaker Training Job config dict.
-    Pushed to XCom so SageMakerTrainingOperator can consume it.
-    """
     ti = ctx["ti"]
     ds = ctx["ds"].replace("-", "")
     train_s3 = ti.xcom_pull(task_ids="export_training_dataset", key="train_s3")
@@ -165,7 +128,6 @@ def _build_training_job_config(**ctx: Any) -> dict[str, Any]:
 
     job_name = f"pulsecommerce-churn-{ds}-{ctx['run_id'][:8]}"
 
-    # XGBoost built-in container URI
     xgb_image = (
         f"683313688378.dkr.ecr.{AWS_REGION}.amazonaws.com/"
         f"sagemaker-xgboost:1.7-1"
@@ -211,10 +173,7 @@ def _build_training_job_config(**ctx: Any) -> dict[str, Any]:
 
 
 def _evaluate_model_metrics(**ctx: Any) -> None:
-    """
-    Pull evaluation metrics from SageMaker Training Job and enforce quality gates.
-    Raises RuntimeError if AUC-ROC < MIN_AUC_ROC or precision < MIN_PRECISION.
-    """
+    """Enforce quality gate: AUC-ROC >= MIN_AUC_ROC. Raises to block deployment."""
     import logging
     log = logging.getLogger(__name__)
 
@@ -243,10 +202,6 @@ def _evaluate_model_metrics(**ctx: Any) -> None:
 
 
 def _register_model(**ctx: Any) -> str:
-    """
-    Register the trained model artifact in SageMaker Model Registry.
-    Returns the model package ARN.
-    """
     import logging
     log = logging.getLogger(__name__)
 
@@ -256,19 +211,13 @@ def _register_model(**ctx: Any) -> str:
     metrics = ti.xcom_pull(task_ids="evaluate_model_metrics", key="all_metrics")
 
     sm_client = boto3.client("sagemaker", region_name=AWS_REGION)
-
     xgb_image = f"683313688378.dkr.ecr.{AWS_REGION}.amazonaws.com/sagemaker-xgboost:1.7-1"
 
     response = sm_client.create_model_package(
         ModelPackageGroupName="pulsecommerce-churn",
         ModelPackageDescription=f"Churn model retrained on {ctx['ds']}. AUC-ROC={auc:.4f}",
         InferenceSpecification={
-            "Containers": [
-                {
-                    "Image": xgb_image,
-                    "ModelDataUrl": model_s3,
-                }
-            ],
+            "Containers": [{"Image": xgb_image, "ModelDataUrl": model_s3}],
             "SupportedContentTypes": ["text/csv"],
             "SupportedResponseMIMETypes": ["text/csv"],
         },
@@ -290,10 +239,7 @@ def _register_model(**ctx: Any) -> str:
 
 
 def _deploy_endpoint(**ctx: Any) -> None:
-    """
-    Blue/green endpoint update: create new endpoint config pointing to the new
-    model, then update the live endpoint. SageMaker handles traffic shifting.
-    """
+    """Blue/green: create new endpoint config, update live endpoint. SageMaker handles traffic."""
     import logging
     log = logging.getLogger(__name__)
 
@@ -303,7 +249,6 @@ def _deploy_endpoint(**ctx: Any) -> None:
 
     sm_client = boto3.client("sagemaker", region_name=AWS_REGION)
 
-    # Create a versioned model resource from the registered package
     model_name = f"pulsecommerce-churn-model-{ds}"
     sm_client.create_model(
         ModelName=model_name,
@@ -311,7 +256,6 @@ def _deploy_endpoint(**ctx: Any) -> None:
         Containers=[{"ModelPackageName": model_package_arn}],
     )
 
-    # Create new endpoint config
     config_name = f"pulsecommerce-churn-config-{ds}"
     sm_client.create_endpoint_config(
         EndpointConfigName=config_name,
@@ -327,14 +271,13 @@ def _deploy_endpoint(**ctx: Any) -> None:
         Tags=[{"Key": "Project", "Value": "PulseCommerce"}],
     )
 
-    # Save current config name for rollback
+    # Save current config for rollback before switching
     try:
         current_ep = sm_client.describe_endpoint(EndpointName=CHURN_ENDPOINT_NAME)
         ti.xcom_push(key="previous_config", value=current_ep["EndpointConfigName"])
     except sm_client.exceptions.ClientError:
-        pass   # endpoint doesn't exist yet (first deploy)
+        pass   # first deploy — no previous config to rollback to
 
-    # Update (or create) endpoint — blue/green managed by SageMaker
     try:
         sm_client.update_endpoint(
             EndpointName=CHURN_ENDPOINT_NAME,
@@ -348,7 +291,6 @@ def _deploy_endpoint(**ctx: Any) -> None:
         )
         log.info("Created endpoint %s", CHURN_ENDPOINT_NAME)
 
-    # Wait for InService
     waiter = sm_client.get_waiter("endpoint_in_service")
     waiter.wait(
         EndpointName=CHURN_ENDPOINT_NAME,
@@ -359,26 +301,19 @@ def _deploy_endpoint(**ctx: Any) -> None:
 
 
 def _smoke_test_endpoint(**ctx: Any) -> None:
-    """
-    Invoke the live endpoint with a synthetic user record.
-    Validates that the response is a float in [0, 1].
-    Raises on failure — triggers rollback task.
-    """
+    """Invoke the new endpoint with a synthetic record. Validates score in [0, 1]."""
     import logging
     log = logging.getLogger(__name__)
 
     sm_runtime = boto3.client("sagemaker-runtime", region_name=AWS_REGION)
 
-    # Synthetic record: [days_since_last_order=45, order_frequency_30d=0.5, ...]
     test_payload = "45,0.5,35.0,120.0,3,0.4,2,1,0"
-
     response = sm_runtime.invoke_endpoint(
         EndpointName=CHURN_ENDPOINT_NAME,
         ContentType="text/csv",
         Body=test_payload,
     )
-    score_str = response["Body"].read().decode("utf-8").strip()
-    score = float(score_str)
+    score = float(response["Body"].read().decode("utf-8").strip())
 
     if not 0.0 <= score <= 1.0:
         raise ValueError(f"Smoke test FAILED: endpoint returned out-of-range score {score}")
@@ -387,10 +322,7 @@ def _smoke_test_endpoint(**ctx: Any) -> None:
 
 
 def _rollback_endpoint(**ctx: Any) -> None:
-    """
-    Restore the previous endpoint config if smoke test or deploy fails.
-    No-op if there was no previous config (first deployment).
-    """
+    """Restore previous endpoint config on smoke test failure. No-op on first deploy."""
     import logging
     log = logging.getLogger(__name__)
 
@@ -408,10 +340,6 @@ def _rollback_endpoint(**ctx: Any) -> None:
     )
     log.info("Rolled back endpoint %s → config %s", CHURN_ENDPOINT_NAME, previous_config)
 
-
-# ---------------------------------------------------------------------------
-# DAG definition
-# ---------------------------------------------------------------------------
 
 with DAG(
     dag_id="churn_model_retrain",
@@ -439,19 +367,16 @@ restored via the `rollback_endpoint` task.
 
     start = EmptyOperator(task_id="start")
 
-    # ── Step 1: Export training data ─────────────────────────────────────────
     export_training_dataset = PythonOperator(
         task_id="export_training_dataset",
         python_callable=_export_training_dataset,
     )
 
-    # ── Step 2: Build training job config ────────────────────────────────────
     build_training_config = PythonOperator(
         task_id="build_training_config",
         python_callable=_build_training_job_config,
     )
 
-    # ── Step 3: SageMaker training job ───────────────────────────────────────
     launch_training = SageMakerTrainingOperator(
         task_id="launch_training_job",
         config="{{ ti.xcom_pull(task_ids='build_training_config') }}",
@@ -461,38 +386,32 @@ restored via the `rollback_endpoint` task.
         check_interval=60,
     )
 
-    # ── Step 4: Evaluate metrics (quality gate) ───────────────────────────────
     evaluate_model_metrics = PythonOperator(
         task_id="evaluate_model_metrics",
         python_callable=_evaluate_model_metrics,
     )
 
-    # ── Step 5: Register in Model Registry ───────────────────────────────────
     register_model = PythonOperator(
         task_id="register_model",
         python_callable=_register_model,
     )
 
-    # ── Step 6: Deploy to endpoint ────────────────────────────────────────────
     deploy_endpoint = PythonOperator(
         task_id="deploy_endpoint",
         python_callable=_deploy_endpoint,
     )
 
-    # ── Step 7: Smoke test ────────────────────────────────────────────────────
     smoke_test = PythonOperator(
         task_id="smoke_test_endpoint",
         python_callable=_smoke_test_endpoint,
     )
 
-    # ── Rollback (fires only if deploy or smoke test fails) ───────────────────
     rollback = PythonOperator(
         task_id="rollback_endpoint",
         python_callable=_rollback_endpoint,
         trigger_rule=TriggerRule.ONE_FAILED,
     )
 
-    # ── Notifications ─────────────────────────────────────────────────────────
     success_notify = SnsPublishOperator(
         task_id="success_notify",
         target_arn=SNS_ALERT_ARN,
@@ -525,7 +444,6 @@ restored via the `rollback_endpoint` task.
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
     )
 
-    # ── Dependency graph ──────────────────────────────────────────────────────
     start >> export_training_dataset >> build_training_config >> launch_training
     launch_training >> evaluate_model_metrics >> register_model >> deploy_endpoint
     deploy_endpoint >> smoke_test >> success_notify >> end

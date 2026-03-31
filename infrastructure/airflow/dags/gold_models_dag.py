@@ -1,28 +1,3 @@
-# =============================================================================
-# infrastructure/airflow/dags/gold_models_dag.py
-# =============================================================================
-# MWAA (Airflow 2.8) DAG — Silver → Gold dbt transformation.
-#
-# Schedule: triggered by silver_refresh DAG via TriggerDagRunOperator,
-#           also runnable on-demand (schedule_interval=None for sensor mode).
-# Pipeline:
-#   1. Wait for silver_refresh DAG success (ExternalTaskSensor)
-#   2. dbt deps + compile (validate SQL before running)
-#   3. Dimension models in parallel (dim_users, dim_products, dim_channels,
-#      dim_geography, dim_date)
-#   4. Fact models after dims (fct_orders, fct_sessions)
-#   5. Aggregation model after facts (agg_daily_metrics)
-#   6. dbt test suite (all Gold models)
-#   7. Redshift Serverless materialized view refresh
-#   8. Notify on completion / failure
-#
-# dbt execution strategy:
-#   - Uses GlueJobOperator to run dbt commands inside a Glue Python Shell job
-#     (dbt-glue adapter, Spark Iceberg catalog).
-#   - Alternatively, PythonOperator with subprocess for environments where
-#     dbt runs on the MWAA worker node directly.
-# =============================================================================
-
 from __future__ import annotations
 
 import os
@@ -40,10 +15,6 @@ from airflow.providers.amazon.aws.operators.sns import SnsPublishOperator
 from airflow.sensors.external_task import ExternalTaskSensor
 from airflow.utils.trigger_rule import TriggerRule
 
-# ---------------------------------------------------------------------------
-# Variables
-# ---------------------------------------------------------------------------
-
 AWS_REGION = Variable.get("aws_region", default_var="us-east-1")
 SNS_ALERT_ARN = Variable.get("data_quality_sns_arn", default_var="")
 REDSHIFT_WORKGROUP = Variable.get("redshift_workgroup", default_var="pulsecommerce")
@@ -53,7 +24,7 @@ DBT_PROJECT_DIR = "/usr/local/airflow/dbt"
 DBT_PROFILES_DIR = "/usr/local/airflow/dbt/profiles"
 DBT_TARGET = "prod"
 
-# Glue job for dbt (optional: set to None to run dbt on MWAA worker via subprocess)
+# Set to None to run dbt on MWAA worker via subprocess instead
 DBT_GLUE_JOB = Variable.get("dbt_glue_job_name", default_var=None)
 
 DEFAULT_ARGS = {
@@ -65,15 +36,9 @@ DEFAULT_ARGS = {
     "retry_delay": timedelta(minutes=10),
 }
 
-# ---------------------------------------------------------------------------
-# dbt runner callable
-# ---------------------------------------------------------------------------
 
 def _run_dbt(command: list[str], **ctx: Any) -> dict[str, Any]:
-    """
-    Run a dbt command on the MWAA worker via subprocess.
-    Raises on non-zero exit. Returns stdout tail for XCom.
-    """
+    """Run a dbt command via subprocess on the MWAA worker. Raises on non-zero exit."""
     import logging
     log = logging.getLogger(__name__)
 
@@ -102,12 +67,10 @@ def _run_dbt(command: list[str], **ctx: Any) -> dict[str, Any]:
 
 
 def _dbt_run_select(models: str, **ctx: Any) -> dict[str, Any]:
-    """Run dbt models by selector string."""
     return _run_dbt(["run", "--select", models], **ctx)
 
 
 def _dbt_test_gold(**ctx: Any) -> dict[str, Any]:
-    """Run dbt tests for all Gold models."""
     return _run_dbt(["test", "--select", "gold"], **ctx)
 
 
@@ -119,20 +82,11 @@ def _dbt_compile(**ctx: Any) -> dict[str, Any]:
     return _run_dbt(["compile", "--select", "gold"], **ctx)
 
 
-# ---------------------------------------------------------------------------
-# Redshift materialized view refresh
-# ---------------------------------------------------------------------------
-
 REDSHIFT_MV_REFRESH_SQL = """
--- Refresh materialized views that back the BI/API layer
 REFRESH MATERIALIZED VIEW analytics.mv_daily_revenue;
 REFRESH MATERIALIZED VIEW analytics.mv_user_ltv_summary;
 REFRESH MATERIALIZED VIEW analytics.mv_product_performance;
 """
-
-# ---------------------------------------------------------------------------
-# DAG definition
-# ---------------------------------------------------------------------------
 
 with DAG(
     dag_id="gold_models",
@@ -166,19 +120,17 @@ Redshift Serverless materialized views refreshed after dbt completes.
 
     start = EmptyOperator(task_id="start")
 
-    # ── Wait for silver_refresh to finish ────────────────────────────────────
     wait_for_silver = ExternalTaskSensor(
         task_id="wait_for_silver_refresh",
         external_dag_id="silver_refresh",
         external_task_id="end",
         allowed_states=["success"],
         failed_states=["failed", "upstream_failed"],
-        timeout=3600,          # wait up to 1h for silver
+        timeout=3600,
         poke_interval=60,
         mode="reschedule",     # release worker slot while waiting
     )
 
-    # ── dbt prep ─────────────────────────────────────────────────────────────
     dbt_deps = PythonOperator(
         task_id="dbt_deps",
         python_callable=_dbt_deps,
@@ -189,7 +141,6 @@ Redshift Serverless materialized views refreshed after dbt completes.
         python_callable=_dbt_compile,
     )
 
-    # ── Dimension models (parallel) ───────────────────────────────────────────
     dim_users = PythonOperator(
         task_id="dim_users",
         python_callable=_dbt_run_select,
@@ -222,7 +173,6 @@ Redshift Serverless materialized views refreshed after dbt completes.
 
     dims_done = EmptyOperator(task_id="dims_done")
 
-    # ── Fact models (after dims) ──────────────────────────────────────────────
     fct_orders = PythonOperator(
         task_id="fct_orders",
         python_callable=_dbt_run_select,
@@ -237,20 +187,17 @@ Redshift Serverless materialized views refreshed after dbt completes.
 
     facts_done = EmptyOperator(task_id="facts_done")
 
-    # ── Aggregation (after facts) ─────────────────────────────────────────────
     agg_daily = PythonOperator(
         task_id="agg_daily_metrics",
         python_callable=_dbt_run_select,
         op_kwargs={"models": "agg_daily_metrics"},
     )
 
-    # ── dbt test suite ────────────────────────────────────────────────────────
     dbt_test = PythonOperator(
         task_id="dbt_test_gold",
         python_callable=_dbt_test_gold,
     )
 
-    # ── Redshift materialized view refresh ────────────────────────────────────
     redshift_mv_refresh = RedshiftDataOperator(
         task_id="redshift_mv_refresh",
         cluster_identifier=None,                # Serverless
@@ -262,7 +209,6 @@ Redshift Serverless materialized views refreshed after dbt completes.
         poll_interval=15,
     )
 
-    # ── Failure alert ─────────────────────────────────────────────────────────
     failure_alert = SnsPublishOperator(
         task_id="failure_alert",
         target_arn=SNS_ALERT_ARN,
@@ -281,7 +227,6 @@ Redshift Serverless materialized views refreshed after dbt completes.
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
     )
 
-    # ── Dependency graph ──────────────────────────────────────────────────────
     start >> wait_for_silver >> dbt_deps >> dbt_compile
 
     dbt_compile >> [dim_users, dim_products, dim_channels, dim_geography, dim_date]

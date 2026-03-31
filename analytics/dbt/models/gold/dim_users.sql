@@ -1,21 +1,3 @@
--- =============================================================================
--- gold/dim_users.sql
--- =============================================================================
--- User dimension with SCD Type 2.
--- Tracks changes in user_segment and ltv_band over time.
--- Managed as a dbt snapshot — this model reads the snapshot output.
---
--- user_segment is computed from the churn model output written to Silver:
---   stable    → 'regular'
---   monitor   → 'regular'
---   at_risk   → 'at_risk'
---   high_churn→ 'at_risk'
---
--- ltv_band is derived from 90-day rolling spend from fct_orders.
---
--- Materialisation: table (full-refresh — small dimension, SCD2 history in snapshot)
--- =============================================================================
-
 {{
     config(
         materialized    = 'table',

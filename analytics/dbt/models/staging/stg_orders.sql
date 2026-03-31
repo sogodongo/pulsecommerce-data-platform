@@ -1,14 +1,3 @@
--- =============================================================================
--- staging/stg_orders.sql
--- =============================================================================
--- Thin view over silver.orders_unified — current records only.
--- Applies incremental lookback window and renames for downstream consistency.
---
--- Note: Only is_current = true rows are surfaced here.
--- SCD2 history is available directly from silver.orders_unified for
--- audit/compliance queries but not needed in Gold fact tables.
--- =============================================================================
-
 with source as (
 
     select *

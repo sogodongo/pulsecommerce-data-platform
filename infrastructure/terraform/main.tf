@@ -1,21 +1,3 @@
-# =============================================================================
-# infrastructure/terraform/main.tf
-# =============================================================================
-# Root Terraform configuration — PulseCommerce Data Platform (AWS).
-#
-# Module composition:
-#   networking        → VPC, subnets, NAT, security groups, VPC endpoints
-#   s3-lakehouse      → S3 Tables (Iceberg), scripts, checkpoints, KMS keys
-#   msk               → Amazon MSK 3.6 cluster, Schema Registry, Debezium IAM
-#   glue              → Glue Data Catalog databases, IAM role, ELT jobs
-#   flink             → Managed Flink 1.19 app, IAM role, CloudWatch alarms
-#   redshift-serverless → Redshift Serverless namespace + workgroup
-#
-# Prerequisites:
-#   terraform init -backend-config=backend.hcl
-#   terraform workspace select prod
-# =============================================================================
-
 terraform {
   required_version = ">= 1.7.0"
 
@@ -50,8 +32,6 @@ provider "aws" {
   }
 }
 
-# ── Data sources ──────────────────────────────────────────────────────────────
-
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
@@ -60,8 +40,6 @@ locals {
   partition  = data.aws_partition.current.partition
   name_prefix = "${var.project}-${var.environment}"
 }
-
-# ── SNS alert topic (shared across modules) ───────────────────────────────────
 
 resource "aws_sns_topic" "data_quality_alerts" {
   name              = "${local.name_prefix}-${var.data_quality_sns_topic_name}"
@@ -76,8 +54,6 @@ resource "aws_sns_topic_subscription" "alert_email" {
   endpoint  = var.alert_email
 }
 
-# ── Networking ────────────────────────────────────────────────────────────────
-
 module "networking" {
   source = "./modules/networking"
 
@@ -89,8 +65,6 @@ module "networking" {
   public_subnet_cidrs  = var.public_subnet_cidrs
   tags                 = var.tags
 }
-
-# ── S3 Lakehouse ──────────────────────────────────────────────────────────────
 
 module "s3_lakehouse" {
   source = "./modules/s3-lakehouse"
@@ -105,8 +79,6 @@ module "s3_lakehouse" {
   kms_key_deletion_days         = var.kms_key_deletion_days
   tags                          = var.tags
 }
-
-# ── MSK ───────────────────────────────────────────────────────────────────────
 
 module "msk" {
   source = "./modules/msk"
@@ -127,8 +99,6 @@ module "msk" {
   sns_alert_topic_arn        = aws_sns_topic.data_quality_alerts.arn
   tags                       = var.tags
 }
-
-# ── Glue ──────────────────────────────────────────────────────────────────────
 
 module "glue" {
   source = "./modules/glue"
@@ -151,8 +121,6 @@ module "glue" {
   schema_registry_url      = var.schema_registry_url
   tags                     = var.tags
 }
-
-# ── Flink ─────────────────────────────────────────────────────────────────────
 
 module "flink" {
   source = "./modules/flink"
@@ -177,8 +145,6 @@ module "flink" {
   sns_alert_topic_arn          = aws_sns_topic.data_quality_alerts.arn
   tags                         = var.tags
 }
-
-# ── Redshift Serverless ───────────────────────────────────────────────────────
 
 module "redshift_serverless" {
   source = "./modules/redshift-serverless"

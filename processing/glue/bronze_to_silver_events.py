@@ -1,26 +1,3 @@
-"""
-processing/glue/bronze_to_silver_events.py
-
-AWS Glue 5.0 ELT Job — Bronze → Silver (Clickstream Events)
-=============================================================
-Transforms raw Bronze clickstream events into the cleaned Silver layer.
-
-Responsibilities:
-  1. Incremental read using Iceberg snapshot diff (avoids full table scan)
-  2. Deduplication by event_id (Flink at-least-once → exactly-once in Silver)
-  3. Bot traffic filtering (is_bot = true → discarded)
-  4. Internal staff event filtering (is_internal = true → discarded)
-  5. PII masking — HMAC-SHA256(user_id + salt), GDPR city masking
-  6. Product enrichment — join with silver.product_catalog for brand/subcategory/margin
-  7. Geo region derivation (country → EMEA/APAC/AMER/LATAM)
-  8. Fraud score join from enriched-events snapshot
-  9. MERGE (upsert) into silver.enriched_events — handles late-arriving Bronze records
-
-Schedule: Every 15 minutes via Amazon MWAA (Airflow silver_refresh_dag.py)
-Workers:  G.1X, autoscale 5–20 workers
-Runtime:  AWS Glue 5.0 (Spark 3.5, Python 3.11)
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -40,7 +17,6 @@ from pyspark.sql.window import Window
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-# ── Job parameters (passed by Airflow / Glue console) ────────────────────────
 args = getResolvedOptions(sys.argv, [
     "JOB_NAME",
     "LAKEHOUSE_BUCKET",
@@ -55,14 +31,12 @@ PII_SALT        = args["PII_SALT"]
 AWS_REGION      = args["AWS_REGION"]
 LAST_SNAPSHOT   = int(args.get("LAST_SNAPSHOT_ID", "0"))
 
-# ── Spark / Glue context ──────────────────────────────────────────────────────
 sc          = SparkContext()
 glueContext = GlueContext(sc)
 spark: SparkSession = glueContext.spark_session
 job = Job(glueContext)
 job.init(JOB_NAME, args)
 
-# ── Iceberg + Glue Catalog config ─────────────────────────────────────────────
 spark.conf.set("spark.sql.extensions",
     "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
 spark.conf.set("spark.sql.catalog.glue_catalog",
@@ -74,15 +48,10 @@ spark.conf.set("spark.sql.catalog.glue_catalog.io-impl",
     "org.apache.iceberg.aws.s3.S3FileIO")
 spark.conf.set("spark.sql.catalog.glue_catalog.glue.skip-archive", "true")
 
-# ── Adaptive query execution ───────────────────────────────────────────────────
 spark.conf.set("spark.sql.adaptive.enabled", "true")
 spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
 spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Snapshot tracking helpers — DynamoDB bookmark
-# ─────────────────────────────────────────────────────────────────────────────
 
 import boto3
 
@@ -110,17 +79,13 @@ def save_snapshot_id(job_name: str, snapshot_id: int) -> None:
         logger.error("Could not save bookmark for %s snapshot=%d: %s", job_name, snapshot_id, exc)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PII masking helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
 GDPR_COUNTRIES = {
     "AT","BE","BG","CY","CZ","DE","DK","EE","ES","FI","FR","GR","HR","HU",
     "IE","IT","LT","LU","LV","MT","NL","PL","PT","RO","SE","SI","SK",   # EU
     "GB","IS","LI","NO",                                                  # UK + EEA
 }
 
-# UDF: HMAC-SHA256 pseudonymisation (deterministic — same user_id always maps to same hash)
+# HMAC-SHA256 pseudonymisation — deterministic so joins still work in Silver
 @F.udf("string")
 def hmac_sha256(value: str) -> str:
     if value is None:
@@ -128,7 +93,6 @@ def hmac_sha256(value: str) -> str:
     return hmac.new(PII_SALT.encode(), value.encode(), hashlib.sha256).hexdigest()
 
 
-# Geo region mapping broadcast
 COUNTRY_REGION = {
     **{c: "EMEA" for c in [
         "GB","DE","FR","IT","ES","NL","BE","SE","NO","DK","FI","PL","AT","CH",
@@ -155,19 +119,9 @@ def derive_region(country: str) -> str:
     return country_region_map.value.get(country, "OTHER")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 1: Incremental Bronze read
-# ─────────────────────────────────────────────────────────────────────────────
-
 def read_bronze_incremental() -> tuple[DataFrame, int]:
-    """
-    Read only new Bronze records since the last processed snapshot.
-    Returns (DataFrame, current_snapshot_id).
-    Uses Iceberg incremental read (snapshot diff) — no full table scan.
-    """
     last_snapshot = LAST_SNAPSHOT if LAST_SNAPSHOT > 0 else get_last_snapshot_id(JOB_NAME)
 
-    # Get current snapshot ID before reading (for bookmark update)
     current_snapshot = spark.sql("""
         SELECT snapshot_id FROM glue_catalog.bronze.clickstream.snapshots
         ORDER BY committed_at DESC LIMIT 1
@@ -180,10 +134,7 @@ def read_bronze_incremental() -> tuple[DataFrame, int]:
         logger.info("Bronze snapshot unchanged (id=%d) — nothing to process", current_snapshot)
         return spark.createDataFrame([], spark.table("glue_catalog.bronze.clickstream").schema), current_snapshot
     else:
-        logger.info(
-            "Incremental read: snapshot %d → %d",
-            last_snapshot, current_snapshot,
-        )
+        logger.info("Incremental read: snapshot %d → %d", last_snapshot, current_snapshot)
         df = (
             spark.read.format("iceberg")
             .option("start-snapshot-id", str(last_snapshot))
@@ -196,15 +147,8 @@ def read_bronze_incremental() -> tuple[DataFrame, int]:
     return df, current_snapshot
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 2: Deduplication
-# ─────────────────────────────────────────────────────────────────────────────
-
 def deduplicate(df: DataFrame) -> DataFrame:
-    """
-    Keep exactly one record per event_id — the one with the latest ingested_at.
-    Flink bronze_writer uses at-least-once delivery, so duplicates are possible.
-    """
+    # Flink bronze_writer is at-least-once — keep latest ingested_at per event_id
     window = Window.partitionBy("event_id").orderBy(F.desc("ingested_at"))
     deduped = (
         df.withColumn("_rn", F.row_number().over(window))
@@ -218,10 +162,6 @@ def deduplicate(df: DataFrame) -> DataFrame:
     return deduped
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 3: Filtering (bots, internal, CRITICAL DQ failures)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def filter_events(df: DataFrame) -> DataFrame:
     filtered = df.filter(
         (F.col("is_bot") == False) &
@@ -233,30 +173,19 @@ def filter_events(df: DataFrame) -> DataFrame:
     return filtered
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 4: PII masking
-# ─────────────────────────────────────────────────────────────────────────────
-
 def mask_pii(df: DataFrame) -> DataFrame:
     return (
         df
-        # Hash user_id with HMAC-SHA256 (deterministic — joins still work in Silver)
         .withColumn("user_id_hashed", hmac_sha256(F.col("user_id")))
-
-        # Mask city for GDPR-scope countries (EU + UK + EEA)
+        # Mask city for GDPR-scope countries — keep country for geo aggregations
         .withColumn("geo_city",
             F.when(F.col("geo_country").isin(GDPR_COUNTRIES), F.lit("MASKED"))
              .otherwise(F.col("geo_city"))
         )
-
-        # Drop raw PII columns — they must not persist beyond Bronze
+        # raw PII must not persist beyond Bronze
         .drop("user_id", "geo_lat", "geo_lon", "raw_payload", "is_bot", "is_internal")
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 5: Product enrichment (join with silver.product_catalog)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def enrich_with_product_catalog(df: DataFrame) -> DataFrame:
     catalog = spark.table("glue_catalog.silver.product_catalog").select(
@@ -273,27 +202,18 @@ def enrich_with_product_catalog(df: DataFrame) -> DataFrame:
         how="left",
     ).drop("cat_sku")
 
-    logger.info("Product enrichment join complete")
     return enriched
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 6: Geo region derivation + derived columns
-# ─────────────────────────────────────────────────────────────────────────────
 
 def add_derived_columns(df: DataFrame) -> DataFrame:
     return (
         df
         .withColumn("geo_region", derive_region(F.col("geo_country")))
         .withColumn("processed_at", F.current_timestamp())
-        # Normalise event_date from event_ts for partitioning
+        # event_date derived from event_ts for partition pruning
         .withColumn("event_date", F.to_date(F.col("event_ts")))
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 7: Select final Silver schema
-# ─────────────────────────────────────────────────────────────────────────────
 
 SILVER_COLUMNS = [
     "event_id", "user_id_hashed", "session_id", "event_type",
@@ -312,17 +232,13 @@ SILVER_COLUMNS = [
 
 
 def select_silver_schema(df: DataFrame) -> DataFrame:
-    # Add any missing columns as nulls (schema evolution safety net)
+    # Fill missing columns with nulls — handles schema evolution without breaking the job
     existing = set(df.columns)
     for col in SILVER_COLUMNS:
         if col not in existing:
             df = df.withColumn(col, F.lit(None).cast("string"))
     return df.select(*SILVER_COLUMNS)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 8: MERGE into Silver Iceberg
-# ─────────────────────────────────────────────────────────────────────────────
 
 def merge_to_silver(df: DataFrame) -> None:
     df.createOrReplaceTempView("silver_updates")
@@ -339,10 +255,6 @@ def merge_to_silver(df: DataFrame) -> None:
 
     logger.info("Merged records into glue_catalog.silver.enriched_events")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
     bronze_df, current_snapshot = read_bronze_incremental()

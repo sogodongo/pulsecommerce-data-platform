@@ -1,25 +1,3 @@
-# =============================================================================
-# infrastructure/airflow/dags/silver_refresh_dag.py
-# =============================================================================
-# MWAA (Airflow 2.8) DAG — Bronze → Silver ELT refresh.
-#
-# Schedule: every 30 minutes (aligns with Flink micro-batch cadence).
-# Pipeline:
-#   1. Source freshness check (dbt source freshness)
-#   2. Parallel Glue jobs:
-#      a. bronze_to_silver_events  — clickstream events
-#      b. bronze_to_silver_orders  — CDC order records
-#      c. silver_product_catalog   — product catalog upsert
-#   3. Post-write GX validation (per table, parallel)
-#   4. Update Glue Data Catalog statistics
-#   5. Notify on failure via SNS
-#
-# Failure policy:
-#   - Glue job failure → entire DAG fails (downstream Gold blocked)
-#   - GX CRITICAL failure → DAG fails (Gold blocked)
-#   - GX WARNING failure → task succeeds with note in XCom, continues
-# =============================================================================
-
 from __future__ import annotations
 
 import json
@@ -35,10 +13,6 @@ from airflow.providers.amazon.aws.operators.sns import SnsPublishOperator
 from airflow.providers.amazon.aws.sensors.glue import GlueJobSensor
 from airflow.utils.trigger_rule import TriggerRule
 
-# ---------------------------------------------------------------------------
-# DAG-level constants (pulled from Airflow Variables for environment portability)
-# ---------------------------------------------------------------------------
-
 AWS_REGION = Variable.get("aws_region", default_var="us-east-1")
 AWS_ACCOUNT_ID = Variable.get("aws_account_id")
 GLUE_ROLE_ARN = Variable.get("glue_role_arn")
@@ -47,7 +21,6 @@ GLUE_SCRIPTS_BUCKET = Variable.get("glue_scripts_bucket")
 SNS_ALERT_ARN = Variable.get("data_quality_sns_arn", default_var="")
 GLUE_DPU = int(Variable.get("silver_glue_dpu", default_var="10"))
 
-# Glue job names (must match Terraform-deployed job names)
 GLUE_JOB_EVENTS = "pulsecommerce-bronze-to-silver-events"
 GLUE_JOB_ORDERS = "pulsecommerce-bronze-to-silver-orders"
 GLUE_JOB_PRODUCTS = "pulsecommerce-silver-product-catalog"
@@ -65,21 +38,15 @@ DEFAULT_ARGS = {
     "max_retry_delay": timedelta(minutes=20),
 }
 
-# ---------------------------------------------------------------------------
-# Helper callables
-# ---------------------------------------------------------------------------
 
 def _check_source_freshness(**ctx) -> str:
     """
-    Calls `dbt source freshness` via subprocess and checks exit code.
-    Routes to 'run_glue_jobs' on success or 'source_stale_alert' on failure.
-    Returns branch task_id.
+    Calls `dbt source freshness`. Routes to Glue jobs on success or stale alert on failure.
     """
     import subprocess
     import logging
 
     log = logging.getLogger(__name__)
-    partition_ds = ctx["ds"]   # YYYY-MM-DD logical date
 
     result = subprocess.run(
         [
@@ -103,7 +70,6 @@ def _check_source_freshness(**ctx) -> str:
 
 
 def _build_glue_args(job_name: str, logical_date: str) -> dict[str, str]:
-    """Build Glue job arguments dict."""
     return {
         "--job-bookmark-option": "job-bookmark-enable",
         "--partition_date": logical_date[:10],
@@ -116,8 +82,7 @@ def _build_glue_args(job_name: str, logical_date: str) -> dict[str, str]:
 
 def _check_gx_result(task_id: str, **ctx) -> None:
     """
-    Pulls GX validation result from XCom and raises if CRITICAL failure found.
-    WARNING failures are logged only.
+    Pulls GX validation result from XCom. CRITICAL failures raise, WARNING failures log only.
     """
     import logging
     log = logging.getLogger(__name__)
@@ -136,10 +101,6 @@ def _check_gx_result(task_id: str, **ctx) -> None:
             raise ValueError(f"CRITICAL GX failure in {task_id}: {critical}")
         log.warning("GX WARNING failures in %s: %s", task_id, [f for f in failed if f.get("severity") == "WARNING"])
 
-
-# ---------------------------------------------------------------------------
-# DAG definition
-# ---------------------------------------------------------------------------
 
 with DAG(
     dag_id="silver_refresh",
@@ -163,10 +124,8 @@ Runs every 30 minutes. Promotes Bronze Iceberg data to Silver with:
     """,
 ) as dag:
 
-    # ── Start ────────────────────────────────────────────────────────────────
     start = EmptyOperator(task_id="start")
 
-    # ── Source freshness check ───────────────────────────────────────────────
     freshness_branch = BranchPythonOperator(
         task_id="check_source_freshness",
         python_callable=_check_source_freshness,
@@ -183,7 +142,6 @@ Runs every 30 minutes. Promotes Bronze Iceberg data to Silver with:
         aws_conn_id="aws_default",
     )
 
-    # ── Glue ELT jobs (parallel) ─────────────────────────────────────────────
     run_events_glue = GlueJobOperator(
         task_id="run_events_glue",
         job_name=GLUE_JOB_EVENTS,
@@ -214,7 +172,6 @@ Runs every 30 minutes. Promotes Bronze Iceberg data to Silver with:
         wait_for_completion=True,
     )
 
-    # ── GX validation (parallel, post-write) ────────────────────────────────
     gx_events = GlueJobOperator(
         task_id="gx_validate_events",
         job_name=GLUE_JOB_GX_EVENTS,
@@ -238,7 +195,6 @@ Runs every 30 minutes. Promotes Bronze Iceberg data to Silver with:
         wait_for_completion=True,
     )
 
-    # ── GX result assertion tasks ────────────────────────────────────────────
     assert_gx_events = PythonOperator(
         task_id="assert_gx_events",
         python_callable=_check_gx_result,
@@ -251,7 +207,6 @@ Runs every 30 minutes. Promotes Bronze Iceberg data to Silver with:
         op_kwargs={"task_id": "gx_validate_orders"},
     )
 
-    # ── Glue catalog stats refresh ───────────────────────────────────────────
     refresh_catalog = PythonOperator(
         task_id="refresh_glue_catalog_stats",
         python_callable=lambda **ctx: __import__("boto3")
@@ -265,7 +220,6 @@ Runs every 30 minutes. Promotes Bronze Iceberg data to Silver with:
             ),
     )
 
-    # ── Failure alert ────────────────────────────────────────────────────────
     failure_alert = SnsPublishOperator(
         task_id="failure_alert",
         target_arn=SNS_ALERT_ARN,
@@ -284,7 +238,6 @@ Runs every 30 minutes. Promotes Bronze Iceberg data to Silver with:
         trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
     )
 
-    # ── Task dependencies ────────────────────────────────────────────────────
     start >> freshness_branch
     freshness_branch >> [source_stale_alert, run_events_glue]
     source_stale_alert >> end

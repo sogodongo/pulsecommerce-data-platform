@@ -1,9 +1,6 @@
-# ─────────────────────────────────────────────────────────────────────────────
 # PulseCommerce — Kafka Topic Definitions
 # Naming convention: {environment}.{domain}.{entity}.{version}
 # Deployed via: kafka-topics.sh or Confluent REST API / Terraform MSK module
-# ─────────────────────────────────────────────────────────────────────────────
-
 defaults:
   replication_factor: 3          # 3-broker MSK cluster, all partitions replicated
   min_insync_replicas: 2         # at least 2 ISRs before producer acks

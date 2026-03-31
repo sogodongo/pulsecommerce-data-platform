@@ -1,30 +1,9 @@
--- =============================================================================
--- PulseCommerce — Silver Layer Iceberg Table DDL
--- =============================================================================
--- Zone:    Silver (cleansed, conformed, enriched)
--- Engine:  AWS Glue 5.0 (Spark 3.5) / Amazon Athena v3
--- Catalog: AWS Glue Data Catalog (glue_catalog)
--- SLA:     Refreshed every 15 minutes via Glue micro-batch ELT jobs
---
--- Design principles:
---   • PII stripped or masked (GDPR/PDPA compliance)
---   • Deduplicated by event_id (Flink at-least-once → exactly-once in Silver)
---   • Bot traffic filtered (is_bot = false)
---   • CDC records merged via UPSERT on natural key + updated_at ordering
---   • Schema compatibility: BACKWARD — Silver consumers can always read older data
---   • All tables support Iceberg row-level MERGE (upsert pattern)
---   • BACKWARD-compatible schema: new columns always have defaults
--- =============================================================================
-
 CREATE DATABASE IF NOT EXISTS glue_catalog.silver
 COMMENT 'Silver zone — cleansed, PII-masked, enriched. 15-minute SLA.';
 
-
--- -----------------------------------------------------------------------------
 -- 1. silver.enriched_events
 --    Source: bronze.clickstream → Glue bronze_to_silver_events job
 --    Joined with: bronze.product_catalog_raw (product enrichment)
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.silver.enriched_events (
 
     -- Identity (PII-safe)
@@ -96,12 +75,9 @@ TBLPROPERTIES (
     'comment'                               = 'Silver enriched events — deduplicated, PII-masked, bot-filtered, product-enriched clickstream.'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 2. silver.user_sessions
 --    Source: Flink session_stitcher job output → Silver merge
 --    Pattern: 15-min inactivity gap = new session
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.silver.user_sessions (
 
     session_id              STRING      COMMENT 'Flink-generated session ID (UUID derived from user_id + window start).',
@@ -156,12 +132,9 @@ TBLPROPERTIES (
     'comment'                               = 'Silver user sessions — Flink session-stitched (15-min inactivity gap). Funnel metrics per session.'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 3. silver.orders_unified
 --    Source: bronze.orders_cdc → Glue bronze_to_silver_orders job
 --    Pattern: SCD Type 2 — tracks status transitions over the order lifecycle
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.silver.orders_unified (
 
     -- Natural key
@@ -221,12 +194,9 @@ TBLPROPERTIES (
     'comment'                               = 'Silver orders — SCD Type 2. Full order lifecycle history from CDC. PII-safe (user_id hashed).'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 4. silver.product_catalog
 --    Source: bronze.product_catalog_raw → Glue silver_product_catalog job
 --    Pattern: Full refresh upsert on sku — always reflects current catalog state
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.silver.product_catalog (
 
     sku                 STRING      COMMENT 'SKU — natural and surrogate key for this table.',

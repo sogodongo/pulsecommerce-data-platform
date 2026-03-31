@@ -1,15 +1,3 @@
-# =============================================================================
-# processing/quality/silver_orders_expectations.py
-# =============================================================================
-# Great Expectations 0.18 validation suite for Silver orders_unified data.
-# Executed as a post-Glue-job step after bronze_to_silver_orders.py writes
-# to the Silver Iceberg table. Validates business rules for the SCD2 model.
-#
-# Severity tiers:
-#   CRITICAL  — blocks Gold dbt run, raises PagerDuty-level alert via SNS
-#   WARNING   — emits CloudWatch metric, logged for daily DQ report
-# =============================================================================
-
 from __future__ import annotations
 
 import json
@@ -27,10 +15,6 @@ from pyspark.sql import DataFrame, SparkSession
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 SUITE_NAME_CRITICAL = "silver_orders_critical"
 SUITE_NAME_WARNING = "silver_orders_warning"
@@ -57,11 +41,6 @@ MAX_VERSIONS_PER_ORDER = 50    # more = runaway CDC loop indicator
 
 CLOUDWATCH_NAMESPACE = "PulseCommerce/DataQuality"
 
-
-# ---------------------------------------------------------------------------
-# Dataclass for results
-# ---------------------------------------------------------------------------
-
 @dataclass
 class ValidationResult:
     suite_name: str
@@ -71,11 +50,6 @@ class ValidationResult:
     row_count: int
     current_row_count: int
     ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-
-# ---------------------------------------------------------------------------
-# Suite builders
-# ---------------------------------------------------------------------------
 
 def build_critical_suite() -> ExpectationSuite:
     """
@@ -188,7 +162,6 @@ def build_critical_suite() -> ExpectationSuite:
 
     return suite
 
-
 def build_warning_suite() -> ExpectationSuite:
     """
     WARNING suite — business plausibility checks for Silver orders.
@@ -268,11 +241,6 @@ def build_warning_suite() -> ExpectationSuite:
 
     return suite
 
-
-# ---------------------------------------------------------------------------
-# Custom SQL-based checks (run directly on Spark)
-# ---------------------------------------------------------------------------
-
 def check_scd2_integrity(spark: SparkSession, database: str = "silver") -> dict[str, Any]:
     """
     Verifies SCD2 constraints that GX cannot express as column-level expectations:
@@ -337,11 +305,6 @@ def check_scd2_integrity(spark: SparkSession, database: str = "silver") -> dict[
         })
 
     return {"passed": len([v for v in violations if v["severity"] == "CRITICAL"]) == 0, "violations": violations}
-
-
-# ---------------------------------------------------------------------------
-# Validator
-# ---------------------------------------------------------------------------
 
 class SilverOrdersValidator:
     """
@@ -487,11 +450,6 @@ class SilverOrdersValidator:
         except Exception:
             logger.error("SNS alert failed", exc_info=True)
 
-
-# ---------------------------------------------------------------------------
-# Glue job entrypoint
-# ---------------------------------------------------------------------------
-
 def run_as_glue_job() -> None:
     import sys
     from awsglue.context import GlueContext
@@ -520,7 +478,6 @@ def run_as_glue_job() -> None:
         raise RuntimeError(
             f"CRITICAL silver_orders DQ failure for {args['partition_date']}. Gold run blocked."
         )
-
 
 if __name__ == "__main__":
     run_as_glue_job()

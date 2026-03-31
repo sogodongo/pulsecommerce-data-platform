@@ -1,29 +1,3 @@
-# =============================================================================
-# analytics/api/Dockerfile
-# =============================================================================
-# Multi-stage build for the PulseCommerce Analytics API (FastAPI 0.111).
-#
-# Stages:
-#   builder  — install dependencies into a virtual environment
-#   runtime  — minimal image with only the venv + app code
-#
-# Security:
-#   - Runs as non-root user (uid=1000)
-#   - No dev dependencies in runtime image
-#   - AWS credentials injected at runtime via IAM role (ECS task role)
-#     — no credentials in image
-#
-# Usage:
-#   docker build -t pulsecommerce-api -f analytics/api/Dockerfile .
-#   docker run -p 8000:8000 \
-#     -e AWS_REGION=us-east-1 \
-#     -e REDSHIFT_WORKGROUP=pulsecommerce \
-#     -e FEATURE_GROUP_NAME=pulsecommerce-user-behavioral \
-#     -e CHURN_ENDPOINT_NAME=pulsecommerce-churn-v1 \
-#     pulsecommerce-api
-# =============================================================================
-
-# ── Stage 1: Builder ─────────────────────────────────────────────────────────
 FROM python:3.11-slim AS builder
 
 WORKDIR /build
@@ -53,8 +27,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
         slowapi==0.1.9 \
         httpx==0.27.0
 
-
-# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
 
 LABEL org.opencontainers.image.title="PulseCommerce Analytics API"

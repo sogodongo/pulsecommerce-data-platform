@@ -1,33 +1,9 @@
--- =============================================================================
--- PulseCommerce — Gold Layer Iceberg Table DDL
--- =============================================================================
--- Zone:    Gold (business-level, analytics-ready)
--- Engine:  AWS Glue 5.0 (dbt-glue) + Redshift Serverless (Spectrum)
--- Catalog: AWS Glue Data Catalog (glue_catalog)
--- SLA:     Refreshed every 1 hour via dbt incremental models (Airflow-orchestrated)
---
--- Design principles:
---   • Kimball-style star schema — fact + dimension tables
---   • Surrogate keys (BIGINT) on all dimensions — natural keys in Silver
---   • All PII removed — user_id_hashed only
---   • SCD Type 2 on dim_users (tracks segment changes over time)
---   • Schema compatibility: FULL (bidirectional) — stable contract for BI tools
---   • Materialized views in Redshift Serverless for hot dashboard queries
---   • Partitioned by business date for query pruning in BI tools
--- =============================================================================
-
 CREATE DATABASE IF NOT EXISTS glue_catalog.gold
 COMMENT 'Gold zone — Kimball star schema, hourly SLA. Analytics and ML consumption layer.';
-
-
--- -----------------------------------------------------------------------------
--- DIMENSION TABLES
--- -----------------------------------------------------------------------------
 
 -- 1. dim_date
 --    Static dimension, pre-populated for 10 years (2020–2030).
 --    Generated once by bootstrap.py — never updated by dbt.
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.gold.dim_date (
 
     date_key        INT         COMMENT 'Surrogate key: YYYYMMDD integer (e.g. 20251114).',
@@ -55,12 +31,9 @@ TBLPROPERTIES (
     'comment'       = 'Date dimension — 2020-01-01 to 2030-12-31. Static; updated only for fiscal calendar changes.'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 2. dim_users
 --    SCD Type 2 — tracks user segment changes over time.
 --    Managed by dbt snapshot (dbt_scd_id as surrogate).
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.gold.dim_users (
 
     user_key            BIGINT      COMMENT 'Surrogate key (dbt-generated hash).',
@@ -94,11 +67,8 @@ TBLPROPERTIES (
     'comment'                       = 'dim_users — SCD Type 2. Tracks user segment and LTV band changes over time.'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 3. dim_products
 --    Full refresh hourly — reflects current product catalog state.
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.gold.dim_products (
 
     product_key     BIGINT      COMMENT 'Surrogate key (hash of sku).',
@@ -126,12 +96,9 @@ TBLPROPERTIES (
     'comment'                       = 'dim_products — full refresh every hour from silver.product_catalog.'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 4. dim_channels
 --    Marketing channel / UTM parameter dimension.
 --    Derived from ad attribution + session referrer data.
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.gold.dim_channels (
 
     channel_key     BIGINT      COMMENT 'Surrogate key.',
@@ -151,11 +118,8 @@ TBLPROPERTIES (
     'comment'       = 'dim_channels — marketing attribution channel dimension.'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 5. dim_geography
 --    Country-level geography dimension with region mapping.
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.gold.dim_geography (
 
     geo_key         BIGINT      COMMENT 'Surrogate key (hash of country).',
@@ -175,15 +139,9 @@ TBLPROPERTIES (
     'comment'       = 'dim_geography — country-level geographic dimension with GDPR scope flag.'
 );
 
-
--- -----------------------------------------------------------------------------
--- FACT TABLES
--- -----------------------------------------------------------------------------
-
 -- 6. fct_orders
 --    Grain: one row per order (current state only).
 --    Partitioned by order_date for date-range query pruning in BI tools.
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.gold.fct_orders (
 
     -- Keys
@@ -236,12 +194,9 @@ TBLPROPERTIES (
     'comment'                               = 'fct_orders — grain: one row per order (current state). Kimball star schema core fact.'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 7. fct_sessions
 --    Grain: one row per user session.
 --    Partitioned by session_date.
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.gold.fct_sessions (
 
     -- Keys
@@ -299,12 +254,9 @@ TBLPROPERTIES (
     'comment'                               = 'fct_sessions — grain: one row per user session. Session-level funnel and revenue attribution.'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 8. agg_daily_metrics
 --    Pre-aggregated daily KPI table for fast dashboard queries.
 --    Materialized in Redshift as a native MV for sub-second latency.
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.gold.agg_daily_metrics (
 
     metric_date             DATE        COMMENT 'Partition column: business date.',
@@ -354,12 +306,8 @@ TBLPROPERTIES (
     'comment'                       = 'agg_daily_metrics — pre-aggregated daily KPIs. Primary source for executive dashboards.'
 );
 
-
--- =============================================================================
 -- Redshift Serverless — External Iceberg Tables via Spectrum
 -- Run these in Redshift Serverless after Gold tables are created in Glue.
--- =============================================================================
-
 /*
 -- Create external schema pointing to Glue Data Catalog (Gold zone)
 CREATE EXTERNAL SCHEMA IF NOT EXISTS spectrum_gold

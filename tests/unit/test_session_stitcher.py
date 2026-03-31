@@ -1,17 +1,3 @@
-# =============================================================================
-# tests/unit/test_session_stitcher.py
-# =============================================================================
-# Unit tests for processing/flink/session_stitcher.py
-#
-# Strategy:
-#   - Tests focus on compute_session_metrics() — a pure function with no Flink
-#     dependencies, making it directly testable without stubs.
-#   - SessionStitcherFunction is tested via lightweight Flink runtime stubs
-#     (same pattern as test_fraud_scorer.py).
-#   - Tests cover: funnel stage derivation, session metric computation,
-#     timer sliding behavior, state accumulation, and edge cases.
-# =============================================================================
-
 from __future__ import annotations
 
 import json
@@ -24,10 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# PyFlink stubs (must come before any import of session_stitcher)
-# ---------------------------------------------------------------------------
-
+# PyFlink stubs — must come before importing session_stitcher
 def _make_pyflink_stubs():
     pyflink = types.ModuleType("pyflink")
     sys.modules.setdefault("pyflink", pyflink)
@@ -96,10 +79,6 @@ from processing.flink.session_stitcher import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 BASE_TS = int(datetime(2024, 1, 15, 14, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
 
 
@@ -128,10 +107,6 @@ def _evt(
         "flags": {"ab_cohort": ab_cohort},
     }
 
-
-# ---------------------------------------------------------------------------
-# State stubs
-# ---------------------------------------------------------------------------
 
 class _MockValueState:
     def __init__(self, v=None): self._v = v
@@ -190,10 +165,6 @@ def _fire_timer(stitcher: SessionStitcherFunction, ts: int) -> list[dict]:
     results = list(stitcher.on_timer(ts, ctx))
     return [json.loads(r) for r in results if r]
 
-
-# =============================================================================
-# Tests: compute_session_metrics — pure function
-# =============================================================================
 
 class TestComputeSessionMetrics:
 
@@ -394,10 +365,6 @@ class TestComputeSessionMetrics:
         assert m["searches"] == 2
 
 
-# =============================================================================
-# Tests: FUNNEL_ORDER constants
-# =============================================================================
-
 class TestFunnelOrder:
 
     def test_purchase_has_highest_index(self):
@@ -412,10 +379,6 @@ class TestFunnelOrder:
     def test_add_and_remove_cart_at_same_depth(self):
         assert FUNNEL_ORDER["add_to_cart"] == FUNNEL_ORDER["remove_from_cart"]
 
-
-# =============================================================================
-# Tests: SessionStitcherFunction — state management
-# =============================================================================
 
 class TestSessionStitcherState:
 
@@ -475,10 +438,6 @@ class TestSessionStitcherState:
         _process(stitcher, json.dumps(_evt("page_view")), BASE_TS)
         assert stitcher.gap_timer_ts_state.value() == BASE_TS + SESSION_GAP_MS
 
-
-# =============================================================================
-# Tests: SessionStitcherFunction — on_timer (session close)
-# =============================================================================
 
 class TestSessionClose:
 
@@ -557,10 +516,6 @@ class TestSessionClose:
         assert results[0]["cart_abandonment"] is False
 
 
-# =============================================================================
-# Tests: session gap constant
-# =============================================================================
-
 class TestSessionGapConstant:
 
     def test_gap_is_15_minutes_in_ms(self):
@@ -572,10 +527,6 @@ class TestSessionGapConstant:
         assert FUNNEL_STAGES[-1] == "purchase"
         assert len(FUNNEL_STAGES) == 5
 
-
-# =============================================================================
-# Tests: malformed input resilience
-# =============================================================================
 
 class TestMalformedInputs:
 

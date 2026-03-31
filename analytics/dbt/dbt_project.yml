@@ -15,7 +15,6 @@ docs-paths:        ["docs"]
 target-path:       "target"
 clean-targets:     ["target", "dbt_packages"]
 
-# ── Global model defaults ────────────────────────────────────────────────────
 models:
   pulsecommerce:
 
@@ -48,7 +47,6 @@ models:
         +materialized: table
         +file_format: iceberg
 
-# ── Snapshots (SCD Type 2 — dim_users) ──────────────────────────────────────
 snapshots:
   pulsecommerce:
     +target_schema: gold
@@ -56,7 +54,6 @@ snapshots:
     +strategy: check
     +unique_key: user_id_hashed
 
-# ── Seeds ────────────────────────────────────────────────────────────────────
 seeds:
   pulsecommerce:
     +schema: gold
@@ -65,7 +62,6 @@ seeds:
         date_key: bigint
         full_date: date
 
-# ── Variables ────────────────────────────────────────────────────────────────
 vars:
   # Lookback window for incremental models — how far back to re-process
   # to catch late-arriving Silver records. Override per environment.

@@ -1,39 +1,4 @@
 #!/usr/bin/env python3
-# =============================================================================
-# ml/training/src/train.py
-# =============================================================================
-# SageMaker training script — executed inside the XGBoost managed container.
-# Receives hyperparameters and data channel paths via SageMaker conventions:
-#   - Hyperparameters: /opt/ml/input/config/hyperparameters.json
-#   - Training data:   /opt/ml/input/data/train/  (CSV, no header)
-#   - Validation data: /opt/ml/input/data/validation/  (CSV, no header)
-#   - Model output:    /opt/ml/model/
-#   - Metrics:         stdout (scraped by SageMaker regex metric definitions)
-#
-# Feature order (must match user_behavioral_features.py FEATURE_SQL output):
-#   0  days_since_last_order
-#   1  days_since_last_session
-#   2  session_count_7d
-#   3  session_count_30d
-#   4  order_count_30d
-#   5  order_count_90d
-#   6  order_frequency_30d
-#   7  avg_order_value_usd
-#   8  total_ltv_usd
-#   9  max_order_value_usd
-#   10 discount_usage_rate
-#   11 cart_abandonment_rate
-#   12 avg_session_duration_s
-#   13 avg_pages_per_session
-#   14 product_view_count_7d
-#   15 preferred_category_encoded
-#   16 channel_group_encoded
-#   17 avg_fraud_score
-#   18 refund_count_90d
-#   19 is_gdpr_scope
-#   20 label  (churned_30d — last column)
-# =============================================================================
-
 from __future__ import annotations
 
 import glob
@@ -64,10 +29,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# SageMaker path conventions
-# ---------------------------------------------------------------------------
-
 SM_INPUT_CONFIG = "/opt/ml/input/config"
 SM_INPUT_DATA = "/opt/ml/input/data"
 SM_MODEL_DIR = "/opt/ml/model"
@@ -97,10 +58,6 @@ FEATURE_NAMES = [
 ]
 LABEL_COL = "label"
 
-
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
 
 def load_csv_channel(channel: str) -> pd.DataFrame:
     """
@@ -155,10 +112,6 @@ def preprocess(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     y = df[LABEL_COL].values.astype(np.float32)
     return X, y
 
-
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
 
 def load_hyperparameters() -> dict[str, Any]:
     """Load SageMaker hyperparameters from the config JSON file."""
@@ -221,10 +174,6 @@ def train(
     return booster
 
 
-# ---------------------------------------------------------------------------
-# Evaluation
-# ---------------------------------------------------------------------------
-
 def evaluate(booster: xgb.Booster, X: np.ndarray, y: np.ndarray, split: str = "validation") -> dict[str, float]:
     """
     Evaluate the booster on a dataset. Prints metrics to stdout in the format
@@ -248,9 +197,8 @@ def evaluate(booster: xgb.Booster, X: np.ndarray, y: np.ndarray, split: str = "v
         f"{split}-error": error,
     }
 
-    # Print in SageMaker-scrapable format
+    # Print in SageMaker-scrapable format: "[<split>] <metric-name>:<value>"
     for name, value in metrics.items():
-        # Format: "[<split>] <metric-name>:<value>"
         clean_name = name.replace(f"{split}-", "")
         print(f"[{split}] {split}-{clean_name}:{value:.6f}")
 
@@ -268,10 +216,6 @@ def log_feature_importance(booster: xgb.Booster) -> None:
     for feat, score in sorted_imp[:10]:
         logger.info("  %-35s %.4f", feat, score)
 
-
-# ---------------------------------------------------------------------------
-# Model serialisation
-# ---------------------------------------------------------------------------
 
 def save_model(booster: xgb.Booster, metrics: dict[str, float]) -> None:
     """
@@ -297,43 +241,26 @@ def save_model(booster: xgb.Booster, metrics: dict[str, float]) -> None:
         json.dump(FEATURE_NAMES, f)
 
 
-# ---------------------------------------------------------------------------
-# Main entrypoint
-# ---------------------------------------------------------------------------
-
 def main() -> None:
     logger.info("=== PulseCommerce Churn Model Training ===")
 
-    # Load hyperparameters
     hp = load_hyperparameters()
     num_round = int(hp.pop("num_round", 200))
     logger.info("Hyperparameters: %s | num_round=%d", hp, num_round)
 
-    # Load data
-    logger.info("Loading training data...")
     df_train = load_csv_channel("train")
-    logger.info("Loading validation data...")
     df_val = load_csv_channel("validation")
-
     logger.info("Train rows: %d | Val rows: %d", len(df_train), len(df_val))
+    logger.info("Training churn rate: %.2f%%", df_train[LABEL_COL].mean() * 100)
 
-    # Class balance info
-    churn_rate = df_train[LABEL_COL].mean()
-    logger.info("Training churn rate: %.2f%%", churn_rate * 100)
-
-    # Preprocess
     X_train, y_train = preprocess(df_train)
     X_val, y_val = preprocess(df_val)
 
-    # Train
-    logger.info("Starting XGBoost training...")
     booster = train(X_train, y_train, X_val, y_val, params=hp, num_round=num_round)
 
-    # Evaluate
     train_metrics = evaluate(booster, X_train, y_train, split="train")
     val_metrics = evaluate(booster, X_val, y_val, split="validation")
 
-    # Feature importance
     log_feature_importance(booster)
 
     # Quality gate check (informational — actual gate enforced in Airflow)
@@ -346,10 +273,7 @@ def main() -> None:
     else:
         logger.info("Quality gate PASSED: validation AUC=%.4f >= %.2f", auc, min_auc)
 
-    # Save
-    all_metrics = {**train_metrics, **val_metrics}
-    save_model(booster, all_metrics)
-
+    save_model(booster, {**train_metrics, **val_metrics})
     logger.info("=== Training complete ===")
 
 

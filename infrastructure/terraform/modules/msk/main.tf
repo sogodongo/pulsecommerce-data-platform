@@ -1,19 +1,6 @@
-# =============================================================================
-# modules/msk/main.tf
-# =============================================================================
-# Amazon MSK 3.6 cluster with:
-#   - TLS encryption in-transit, KMS at-rest
-#   - MSK Tiered Storage (local.retention.ms=86400000, remote S3)
-#   - Confluent Schema Registry (client auth via IAM)
-#   - CloudWatch broker metrics (PER_BROKER enhanced)
-#   - SNS alarm on consumer lag > 100k messages
-# =============================================================================
-
 locals {
   name_prefix = "${var.project}-${var.environment}"
 }
-
-# ── MSK configuration ─────────────────────────────────────────────────────────
 
 resource "aws_msk_configuration" "main" {
   name              = "${local.name_prefix}-msk-config"
@@ -37,8 +24,6 @@ resource "aws_msk_configuration" "main" {
     log.local.retention.bytes=-1
   EOF
 }
-
-# ── MSK cluster ───────────────────────────────────────────────────────────────
 
 resource "aws_msk_cluster" "main" {
   cluster_name           = "${local.name_prefix}-msk"
@@ -100,15 +85,11 @@ resource "aws_msk_cluster" "main" {
   tags = merge(var.tags, { Name = "${local.name_prefix}-msk" })
 }
 
-# ── CloudWatch log group for broker logs ──────────────────────────────────────
-
 resource "aws_cloudwatch_log_group" "msk_broker" {
   name              = "/aws/msk/${local.name_prefix}"
   retention_in_days = 14
   tags              = var.tags
 }
-
-# ── Consumer lag alarm ────────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_metric_alarm" "consumer_lag" {
   alarm_name          = "${local.name_prefix}-msk-consumer-lag"
@@ -131,8 +112,6 @@ resource "aws_cloudwatch_metric_alarm" "consumer_lag" {
   tags = var.tags
 }
 
-# ── Disk usage alarm (>80%) ───────────────────────────────────────────────────
-
 resource "aws_cloudwatch_metric_alarm" "disk_used" {
   alarm_name          = "${local.name_prefix}-msk-disk-used"
   comparison_operator = "GreaterThanThreshold"
@@ -151,8 +130,6 @@ resource "aws_cloudwatch_metric_alarm" "disk_used" {
 
   tags = var.tags
 }
-
-# ── IAM policy for MSK producers/consumers ────────────────────────────────────
 
 resource "aws_iam_policy" "msk_producer_consumer" {
   name        = "${local.name_prefix}-msk-producer-consumer"

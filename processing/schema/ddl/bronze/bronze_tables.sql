@@ -1,31 +1,8 @@
--- =============================================================================
--- PulseCommerce — Bronze Layer Iceberg Table DDL
--- =============================================================================
--- Zone:    Bronze (raw, immutable)
--- Engine:  AWS Glue 5.0 (Spark 3.5) / Amazon Athena v3
--- Catalog: AWS Glue Data Catalog (glue_catalog)
--- Storage: Amazon S3 Tables bucket (built-in Iceberg support)
--- SLA:     Written within 30s of Kafka offset commit (Flink streaming write)
---
--- Design principles:
---   • Raw source data is preserved unchanged (raw_payload column)
---   • Schema validated at write time but no transformations applied
---   • PII fields present — access restricted to data-engineering-role only
---   • Partitioned by ingestion time (event_date, event_hour) for incremental
---     Silver reads using Iceberg snapshot diffs
---   • format-version=2 enables row-level deletes (for GDPR erasure requests)
---   • All tables use hidden partitioning — analysts query on event_ts directly
--- =============================================================================
-
--- Create Glue catalog databases if they don't exist
 CREATE DATABASE IF NOT EXISTS glue_catalog.bronze
 COMMENT 'Raw, immutable Bronze zone — PulseCommerce Medallion Lakehouse';
 
-
--- -----------------------------------------------------------------------------
 -- 1. bronze.clickstream
 --    Source: Web / Mobile SDK events via MSK → Flink Bronze Writer job
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.bronze.clickstream (
 
     -- Identity
@@ -102,11 +79,8 @@ TBLPROPERTIES (
     'comment'                               = 'Bronze clickstream — raw Web/Mobile SDK events. PII present. Data Engineering role only.'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 2. bronze.orders_cdc
 --    Source: Debezium PostgreSQL CDC → MSK → Flink / Kafka Connect S3 Sink
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.bronze.orders_cdc (
 
     -- CDC envelope fields (Debezium ExtractNewRecordState unwrap applied)
@@ -147,11 +121,8 @@ TBLPROPERTIES (
     'comment'                               = 'Bronze CDC events from PostgreSQL orders/users/payments via Debezium. PII present.'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 3. bronze.ad_attribution_raw
 --    Source: Lambda ad_attribution_producer (Facebook + Google Ads, daily)
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.bronze.ad_attribution_raw (
 
     source              STRING      COMMENT 'Ad platform: facebook | google',
@@ -183,11 +154,8 @@ TBLPROPERTIES (
     'comment'                               = 'Bronze ad attribution — daily pull from Facebook + Google Ads.'
 );
 
-
--- -----------------------------------------------------------------------------
 -- 4. bronze.product_catalog_raw
 --    Source: Lambda product_catalog_producer (REST API, every 15 min)
--- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS glue_catalog.bronze.product_catalog_raw (
 
     sku                 STRING      COMMENT 'Stock Keeping Unit — natural key.',

@@ -1,15 +1,3 @@
-# =============================================================================
-# tests/quality/run_gx_ci_suite.py
-# =============================================================================
-# CI runner for Great Expectations validation suites.
-# Executed in GitHub Actions against synthetic sample DataFrames — no live AWS
-# connections required. Uses PySpark local mode + mocked boto3 clients.
-#
-# Usage:
-#   pytest tests/quality/run_gx_ci_suite.py -v
-#   python tests/quality/run_gx_ci_suite.py   # direct execution
-# =============================================================================
-
 from __future__ import annotations
 
 import json
@@ -33,9 +21,6 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-# ---------------------------------------------------------------------------
-# Ensure project root is on the path
-# ---------------------------------------------------------------------------
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -52,10 +37,6 @@ from processing.quality.silver_orders_expectations import (
     check_scd2_integrity,
 )
 
-# ---------------------------------------------------------------------------
-# Shared Spark session fixture
-# ---------------------------------------------------------------------------
-
 @pytest.fixture(scope="session")
 def spark() -> SparkSession:
     """Local PySpark session — no cluster required."""
@@ -68,11 +49,6 @@ def spark() -> SparkSession:
         .config("spark.ui.enabled", "false")
         .getOrCreate()
     )
-
-
-# ---------------------------------------------------------------------------
-# Sample data factories
-# ---------------------------------------------------------------------------
 
 BRONZE_SCHEMA = StructType([
     StructField("event_id", StringType(), False),
@@ -108,10 +84,8 @@ SILVER_ORDERS_SCHEMA = StructType([
     StructField("processed_at", TimestampType(), True),
 ])
 
-
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)   # Spark needs tz-naive
-
 
 def make_valid_bronze_rows(n: int = 200) -> list[tuple]:
     ts = _now()
@@ -132,7 +106,6 @@ def make_valid_bronze_rows(n: int = 200) -> list[tuple]:
         )
         for i in range(n)
     ]
-
 
 def make_valid_silver_orders_rows(n: int = 100) -> list[tuple]:
     ts = _now()
@@ -158,26 +131,15 @@ def make_valid_silver_orders_rows(n: int = 100) -> list[tuple]:
         for i in range(n)
     ]
 
-
-# ---------------------------------------------------------------------------
-# Mock boto3 clients (no AWS creds needed in CI)
-# ---------------------------------------------------------------------------
-
 def _mock_cw() -> MagicMock:
     m = MagicMock()
     m.put_metric_data.return_value = {}
     return m
 
-
 def _mock_sns() -> MagicMock:
     m = MagicMock()
     m.publish.return_value = {"MessageId": "mock-message-id"}
     return m
-
-
-# ---------------------------------------------------------------------------
-# Bronze clickstream — CRITICAL suite
-# ---------------------------------------------------------------------------
 
 class TestBronzeCriticalSuite:
 
@@ -220,11 +182,6 @@ class TestBronzeCriticalSuite:
         result = validator.validate(df, partition_ts="test")
         assert not result.success
 
-
-# ---------------------------------------------------------------------------
-# Bronze clickstream — WARNING suite
-# ---------------------------------------------------------------------------
-
 class TestBronzeWarningSuite:
 
     def test_out_of_range_price_triggers_warning(self, spark: SparkSession) -> None:
@@ -245,11 +202,6 @@ class TestBronzeWarningSuite:
         result = validator.validate(df, partition_ts="test")
         # Overall success depends only on critical suite
         assert result.statistics["critical_expectations_failed"] == 0
-
-
-# ---------------------------------------------------------------------------
-# Silver orders — CRITICAL suite
-# ---------------------------------------------------------------------------
 
 class TestSilverOrdersCriticalSuite:
 
@@ -299,11 +251,6 @@ class TestSilverOrdersCriticalSuite:
         result = validator.validate(df, run_scd2_checks=False, partition_ts="test")
         assert not result.success
 
-
-# ---------------------------------------------------------------------------
-# Suite builders return valid suites
-# ---------------------------------------------------------------------------
-
 class TestSuiteBuilders:
 
     def test_bronze_critical_suite_has_expectations(self) -> None:
@@ -329,11 +276,6 @@ class TestSuiteBuilders:
     def test_silver_critical_suite_name(self) -> None:
         suite = silver_critical_suite()
         assert suite.expectation_suite_name == "silver_orders_critical"
-
-
-# ---------------------------------------------------------------------------
-# CloudWatch metric emission
-# ---------------------------------------------------------------------------
 
 class TestMetricEmission:
 
@@ -365,11 +307,6 @@ class TestMetricEmission:
             validator = BronzeClickstreamValidator(spark, cw_client=_mock_cw(), sns_client=sns)
             validator.validate(df, partition_ts="test")
         sns.publish.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Direct execution (non-pytest)
-# ---------------------------------------------------------------------------
 
 def run_all_suites_standalone() -> int:
     """
@@ -409,7 +346,6 @@ def run_all_suites_standalone() -> int:
 
     spark.stop()
     return exit_code
-
 
 if __name__ == "__main__":
     sys.exit(run_all_suites_standalone())

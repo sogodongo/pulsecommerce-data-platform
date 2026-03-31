@@ -1,25 +1,3 @@
-"""
-processing/schema/evolve_clickstream.py
-
-Manages schema evolution for the bronze.clickstream Iceberg table using the
-PyIceberg library. All changes are metadata-only operations — no data rewrite.
-
-Iceberg column IDs (not names) track columns internally, so:
-  - Renaming columns is safe and backward-compatible
-  - Adding nullable columns (with defaults) is safe
-  - Dropping columns requires careful downstream impact analysis
-
-Compatibility rules (enforced in Confluent Schema Registry):
-  Bronze  → NONE         (raw source, schema may change without notice)
-  Silver  → BACKWARD     (new Silver consumers can read older Silver data)
-  Gold    → FULL         (bidirectional — stable contract for BI tools)
-
-Usage:
-  python evolve_clickstream.py --action add_column --dry-run
-  python evolve_clickstream.py --action rename_column --apply
-  python evolve_clickstream.py --action show_history
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -48,10 +26,6 @@ TABLE_FQNAME = "bronze.clickstream"
 WAREHOUSE = os.environ.get("LAKEHOUSE_BUCKET", "s3://pulsecommerce-lakehouse-123456789012/")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Catalog connection
-# ─────────────────────────────────────────────────────────────────────────────
-
 def get_catalog():
     return load_catalog(
         CATALOG_NAME,
@@ -69,12 +43,7 @@ def get_table():
     return catalog.load_table(TABLE_FQNAME)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Schema introspection
-# ─────────────────────────────────────────────────────────────────────────────
-
 def show_current_schema(dry_run: bool = True) -> None:
-    """Print the current schema and metadata of bronze.clickstream."""
     table = get_table()
     schema = table.schema()
 
@@ -96,7 +65,6 @@ def show_current_schema(dry_run: bool = True) -> None:
 
 
 def show_snapshot_history() -> None:
-    """Print the Iceberg snapshot history for bronze.clickstream."""
     table = get_table()
     snapshots = table.snapshots()
 
@@ -111,16 +79,8 @@ def show_snapshot_history() -> None:
         print(f"{snap.snapshot_id:<20} {ts:<30} {op:<15} +{added}/-{deleted} rows")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Safe schema evolution operations
-# ─────────────────────────────────────────────────────────────────────────────
-
 def add_user_agent_column(dry_run: bool = True) -> None:
-    """
-    Add user_agent STRING column to bronze.clickstream.
-    Safe: BACKWARD compatible — new field is nullable with no default value needed.
-    Added in v1.1 of the clickstream schema.
-    """
+    # Safe BACKWARD-compatible add — nullable, no default needed
     table = get_table()
     existing_names = {f.name for f in table.schema().fields}
 
@@ -144,10 +104,7 @@ def add_user_agent_column(dry_run: bool = True) -> None:
 
 
 def add_churn_score_column(dry_run: bool = True) -> None:
-    """
-    Add churn_score DOUBLE column — emitted by Flink ChurnScoringMapFunction.
-    Added when SageMaker churn endpoint goes live.
-    """
+    # Added when SageMaker churn endpoint goes live — null until then
     table = get_table()
     existing_names = {f.name for f in table.schema().fields}
 
@@ -170,15 +127,11 @@ def add_churn_score_column(dry_run: bool = True) -> None:
 
 
 def rename_is_bot_to_bot_detected(dry_run: bool = True) -> None:
-    """
-    Rename flags.is_bot → flags.bot_detected.
-    Iceberg tracks columns by ID internally — rename is safe and backward compatible.
-    Old Flink jobs writing is_bot continue to work; new jobs write bot_detected.
-    """
+    # Iceberg tracks columns by ID not name — old Flink jobs writing is_bot keep working
+    # in parallel while new jobs are deployed to write bot_detected.
     table = get_table()
 
-    # Note: for nested struct fields the path uses dot notation
-    # but in this flattened Bronze schema, is_bot is a top-level column
+    # is_bot is top-level in this flattened Bronze schema (not nested in a struct)
     existing_names = {f.name for f in table.schema().fields}
 
     if "bot_detected" in existing_names:
@@ -201,10 +154,7 @@ def rename_is_bot_to_bot_detected(dry_run: bool = True) -> None:
 
 
 def add_product_quantity_column(dry_run: bool = True) -> None:
-    """
-    Add product_quantity INT column — missing from original v1 schema.
-    Populated by Flink from add_to_cart / purchase events.
-    """
+    # Missing from original v1 schema — populated by Flink from add_to_cart / purchase events
     table = get_table()
     existing_names = {f.name for f in table.schema().fields}
 
@@ -226,15 +176,8 @@ def add_product_quantity_column(dry_run: bool = True) -> None:
     logger.info("Added column 'product_quantity' to %s", TABLE_FQNAME)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Snapshot management
-# ─────────────────────────────────────────────────────────────────────────────
-
 def expire_old_snapshots(dry_run: bool = True, older_than_days: int = 7) -> None:
-    """
-    Expire Iceberg snapshots older than `older_than_days`.
-    Note: S3 Tables handles this automatically — this is for non-S3-Tables buckets.
-    """
+    # S3 Tables handles this automatically — only needed for non-S3-Tables buckets
     from datetime import timedelta
 
     table = get_table()
@@ -277,10 +220,6 @@ def create_branch_for_backfill(branch_name: str, dry_run: bool = True) -> None:
         branch_name, current_snapshot_id, TABLE_FQNAME,
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────────────────────────────────────
 
 ACTIONS = {
     "show_schema": lambda args: show_current_schema(dry_run=args.dry_run),

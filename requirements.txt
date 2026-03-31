@@ -1,44 +1,34 @@
-# ── Core AWS SDK ─────────────────────────────────────────────────────────────
 boto3==1.34.100
 botocore==1.34.100
 aioboto3==13.0.0
 
-# ── Kafka / Ingestion ─────────────────────────────────────────────────────────
 kafka-python==2.0.2
 confluent-kafka==2.4.0
 fastavro==1.9.4             # Avro serialisation for Schema Registry
 
-# ── Apache Flink (PyFlink) ────────────────────────────────────────────────────
 apache-flink==1.19.0
 apache-flink-libraries==1.19.0
 
-# ── Apache Iceberg (Python client) ───────────────────────────────────────────
 pyiceberg[glue,s3]==0.7.0
 
-# ── AWS Glue / PySpark ───────────────────────────────────────────────────────
 pyspark==3.5.1              # matches Glue 5.0 runtime (Spark 3.5)
 
-# ── dbt ───────────────────────────────────────────────────────────────────────
 dbt-core==1.8.0
 dbt-glue==1.8.0
 
-# ── Data Quality ──────────────────────────────────────────────────────────────
 great-expectations==0.18.15
 
-# ── FastAPI (Serving Layer) ───────────────────────────────────────────────────
 fastapi==0.111.0
 uvicorn[standard]==0.29.0
 pydantic==2.7.1
 httpx==0.27.0               # async HTTP for internal API calls
 
-# ── ML / SageMaker ────────────────────────────────────────────────────────────
 sagemaker>=2.220.0
 scikit-learn>=1.4.0
 xgboost>=2.0.0
 pandas>=2.2.0
 numpy>=1.26.0
 
-# ── Utilities ─────────────────────────────────────────────────────────────────
 python-dotenv==1.0.1
 tenacity==8.3.0             # retry logic for API calls
 structlog==24.1.0           # structured JSON logging

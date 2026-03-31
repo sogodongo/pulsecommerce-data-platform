@@ -1,14 +1,6 @@
-# =============================================================================
-# modules/glue/main.tf
-# =============================================================================
-# Glue Data Catalog (databases + Iceberg tables), IAM role, and ELT jobs.
-# =============================================================================
-
 locals {
   name_prefix = "${var.project}-${var.environment}"
 }
-
-# ── Glue Data Catalog databases ───────────────────────────────────────────────
 
 resource "aws_glue_catalog_database" "bronze" {
   name        = var.glue_database_bronze
@@ -27,8 +19,6 @@ resource "aws_glue_catalog_database" "gold" {
   description = "PulseCommerce Gold layer — Kimball star schema"
   tags        = var.tags
 }
-
-# ── IAM role for Glue jobs ────────────────────────────────────────────────────
 
 resource "aws_iam_role" "glue" {
   name = "${local.name_prefix}-glue-role"
@@ -117,8 +107,6 @@ resource "aws_iam_role_policy" "glue_data_access" {
   })
 }
 
-# ── DynamoDB bookmark table ───────────────────────────────────────────────────
-
 resource "aws_dynamodb_table" "glue_bookmarks" {
   name           = "pulsecommerce-glue-bookmarks"
   billing_mode   = "PAY_PER_REQUEST"
@@ -133,8 +121,6 @@ resource "aws_dynamodb_table" "glue_bookmarks" {
   server_side_encryption { enabled = true }
   tags = var.tags
 }
-
-# ── Glue ELT jobs ─────────────────────────────────────────────────────────────
 
 locals {
   glue_common_args = {

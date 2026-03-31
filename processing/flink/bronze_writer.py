@@ -1,30 +1,3 @@
-"""
-processing/flink/bronze_writer.py
-
-Flink Job 1 — Bronze Writer
-============================
-Reads from MSK topic `prod.ecommerce.clickstream.v1` and writes every event
-to the Bronze Iceberg table `glue_catalog.bronze.clickstream` in S3 Tables.
-
-Responsibilities:
-  - Validate required fields (event_id, user_id, event_ts)
-  - Run lightweight Great Expectations checks via side-output routing
-  - Route CRITICAL DQ failures to the Dead Letter Queue topic
-  - Write all valid (+ WARNING-flagged) events to Bronze Iceberg
-  - Preserve the raw JSON payload for future reprocessing
-
-Architecture decisions:
-  - Parallelism=24 matches the MSK topic partition count for 1:1 partition alignment
-  - Checkpointing every 60s with RocksDB state backend (incremental checkpoints)
-  - At-least-once delivery from Kafka; exactly-once dedup happens in Silver via MERGE
-  - Iceberg commit interval tied to checkpoint interval (Flink Iceberg sink commits on checkpoint)
-  - Watermark: 4-hour bounded out-of-orderness for late mobile events
-
-Deployment: Amazon Managed Service for Apache Flink (Flink 1.19)
-  JAR: flink-jobs.zip (PyFlink application)
-  KPUs: 10 baseline, autoscale to 50 on CPU > 75%
-"""
-
 from __future__ import annotations
 
 import json
@@ -49,7 +22,6 @@ from pyflink.table.confluent import ConfluentSettings  # type: ignore[import]
 
 logger = logging.getLogger(__name__)
 
-# ── Environment config ────────────────────────────────────────────────────────
 MSK_BROKERS        = os.environ["MSK_BROKERS"]
 SCHEMA_REGISTRY    = os.environ["SCHEMA_REGISTRY_URL"]
 SOURCE_TOPIC       = "prod.ecommerce.clickstream.v1"
@@ -59,15 +31,11 @@ AWS_REGION         = os.environ.get("AWS_REGION", "us-east-1")
 PARALLELISM        = int(os.environ.get("FLINK_PARALLELISM", "24"))
 CHECKPOINT_INTERVAL_MS = int(os.environ.get("CHECKPOINT_INTERVAL_MS", "60000"))
 
-# Output tag for DLQ routing (CRITICAL DQ failures)
+# CRITICAL DQ failures go here; WARNING events still make it to Bronze
 DLQ_TAG = OutputTag("dlq", Types.STRING())
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Schema validation / DQ — runs inline in Flink (no GX Cloud overhead)
-# Full GX suite runs post-Silver via Glue job step
-# ─────────────────────────────────────────────────────────────────────────────
-
+# Runs inline in Flink — full GX suite runs post-Silver via Glue
 class DQResult:
     __slots__ = ("flag", "message")
 
@@ -77,12 +45,7 @@ class DQResult:
 
 
 def validate_event(event: dict) -> DQResult:
-    """
-    Lightweight inline DQ checks. Mirrors the critical subset of the
-    Great Expectations suite in processing/quality/bronze_clickstream_expectations.py.
-    Returns DQResult with flag=None for clean events.
-    """
-    # ── CRITICAL: required fields ─────────────────────────────────────────────
+    # Mirrors the critical subset of processing/quality/bronze_clickstream_expectations.py
     if not event.get("event_id"):
         return DQResult("CRITICAL", "event_id is null or empty")
     if not event.get("user_id"):
@@ -90,7 +53,6 @@ def validate_event(event: dict) -> DQResult:
     if not event.get("timestamp"):
         return DQResult("CRITICAL", "timestamp is null or empty")
 
-    # ── CRITICAL: valid event_type ────────────────────────────────────────────
     valid_types = {
         "product_view", "add_to_cart", "remove_from_cart",
         "checkout_start", "checkout_complete", "purchase",
@@ -99,13 +61,11 @@ def validate_event(event: dict) -> DQResult:
     if event.get("event_type") not in valid_types:
         return DQResult("CRITICAL", f"invalid event_type: {event.get('event_type')!r}")
 
-    # ── WARNING: product price range ──────────────────────────────────────────
     product = event.get("product") or {}
     price = product.get("price_usd")
     if price is not None and not (0.01 <= price <= 50_000.0):
         return DQResult("WARNING", f"product.price_usd out of range: {price}")
 
-    # ── WARNING: geo country present ──────────────────────────────────────────
     geo = event.get("geo") or {}
     if not geo.get("country"):
         return DQResult("WARNING", "geo.country is missing")
@@ -113,12 +73,7 @@ def validate_event(event: dict) -> DQResult:
     return DQResult(None)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Timestamp parsing
-# ─────────────────────────────────────────────────────────────────────────────
-
 def parse_event_ts(ts_str: str | None) -> datetime | None:
-    """Parse ISO-8601 timestamp string to datetime. Returns None on failure."""
     if not ts_str:
         return None
     for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z"):
@@ -130,24 +85,11 @@ def parse_event_ts(ts_str: str | None) -> datetime | None:
     return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Flink ProcessFunction — validates + routes to Iceberg or DLQ
-# ─────────────────────────────────────────────────────────────────────────────
-
 class BronzeValidationFunction(ProcessFunction):
-    """
-    For each raw Kafka JSON message:
-      1. Parse JSON
-      2. Run inline DQ checks
-      3. Emit to main output (Bronze Iceberg sink) if CRITICAL check passes
-      4. Emit to DLQ side-output if CRITICAL check fails
-      5. Attach dq_flag + dq_failure_msg columns to every record
-    """
 
     def process_element(self, raw_json: str, ctx: ProcessFunction.Context):
         ingested_at = datetime.now(timezone.utc).isoformat()
 
-        # ── Parse JSON ────────────────────────────────────────────────────────
         try:
             event = json.loads(raw_json)
         except (json.JSONDecodeError, TypeError) as exc:
@@ -159,7 +101,6 @@ class BronzeValidationFunction(ProcessFunction):
             ctx.output(DLQ_TAG, dlq_payload)
             return
 
-        # ── DQ validation ────────────────────────────────────────────────────
         dq = validate_event(event)
 
         if dq.flag == "CRITICAL":
@@ -172,14 +113,12 @@ class BronzeValidationFunction(ProcessFunction):
             ctx.output(DLQ_TAG, dlq_payload)
             return  # do NOT write to Bronze
 
-        # ── Parse timestamps ──────────────────────────────────────────────────
         event_dt = parse_event_ts(event.get("timestamp"))
         if event_dt is None:
-            # Fallback: use Kafka ingestion time (event will have dq_flag=WARNING)
+            # fallback to ingestion time; flag so downstream knows
             event_dt = datetime.now(timezone.utc)
             dq = DQResult("WARNING", "could not parse event timestamp — using ingestion time")
 
-        # ── Build flattened Bronze record ─────────────────────────────────────
         device  = event.get("device") or {}
         page    = event.get("page") or {}
         product = event.get("product") or {}
@@ -226,10 +165,6 @@ class BronzeValidationFunction(ProcessFunction):
         yield json.dumps(bronze_record)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DLQ producer (Kafka sink for CRITICAL failures)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def build_dlq_sink():
     from pyflink.datastream.connectors.kafka import KafkaSink, KafkaRecordSerializationSchema
 
@@ -249,12 +184,7 @@ def build_dlq_sink():
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main Flink job graph
-# ─────────────────────────────────────────────────────────────────────────────
-
 def build_job():
-    # ── Execution environment ─────────────────────────────────────────────────
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_parallelism(PARALLELISM)
     env.enable_checkpointing(CHECKPOINT_INTERVAL_MS, CheckpointingMode.EXACTLY_ONCE)
@@ -263,7 +193,6 @@ def build_job():
     env.get_checkpoint_config().set_max_concurrent_checkpoints(1)
     env.get_checkpoint_config().enable_unaligned_checkpoints()           # reduces checkpoint pause
 
-    # RocksDB state backend — incremental checkpoints to S3
     from pyflink.datastream.state_backend import EmbeddedRocksDBStateBackend
     checkpoints_bucket = os.environ.get(
         "FLINK_CHECKPOINTS_BUCKET", "s3://pulsecommerce-flink-checkpoints/"
@@ -273,7 +202,6 @@ def build_job():
         f"{checkpoints_bucket}bronze-writer/"
     )
 
-    # ── Kafka source ──────────────────────────────────────────────────────────
     kafka_source = (
         KafkaSource.builder()
         .set_bootstrap_servers(MSK_BROKERS)
@@ -292,7 +220,7 @@ def build_job():
     watermark_strategy = (
         WatermarkStrategy
         .for_bounded_out_of_orderness(Duration.of_hours(4))
-        .with_idleness(Duration.of_minutes(5))               # mark partition idle after 5 min no data
+        .with_idleness(Duration.of_minutes(5))
     )
 
     raw_stream = env.from_source(
@@ -301,20 +229,16 @@ def build_job():
         source_name="MSK-clickstream",
     )
 
-    # ── Validation + routing ──────────────────────────────────────────────────
     validated_stream = raw_stream.process(
         BronzeValidationFunction(),
         output_type=Types.STRING(),
     )
 
-    # DLQ side-output → separate Kafka sink
     dlq_stream = validated_stream.get_side_output(DLQ_TAG)
     dlq_stream.sink_to(build_dlq_sink()).name("DLQ-kafka-sink")
 
-    # ── Table API for Iceberg sink ────────────────────────────────────────────
     t_env = StreamTableEnvironment.create(env)
 
-    # Register Iceberg + Glue Catalog
     t_env.execute_sql(f"""
         CREATE CATALOG glue_catalog WITH (
             'type'          = 'iceberg',
@@ -326,11 +250,9 @@ def build_job():
     """)
     t_env.use_catalog("glue_catalog")
 
-    # Register the validated stream as a temporary view
     bronze_table = t_env.from_data_stream(validated_stream)
     t_env.create_temporary_view("validated_events_raw", bronze_table)
 
-    # Parse JSON strings into typed columns and INSERT into Iceberg
     t_env.execute_sql("""
         INSERT INTO glue_catalog.bronze.clickstream
         SELECT

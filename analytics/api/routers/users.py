@@ -1,15 +1,3 @@
-# =============================================================================
-# analytics/api/routers/users.py
-# =============================================================================
-# FastAPI router — user analytics endpoints.
-#
-# Endpoints:
-#   GET /v1/users/{user_id_hashed}          — user profile + LTV + churn score
-#   GET /v1/users/{user_id_hashed}/features — raw behavioral features from Feature Store
-#   GET /v1/users/{user_id_hashed}/orders   — order history (paginated)
-#   GET /v1/users/ltv-segments              — LTV band distribution summary
-# =============================================================================
-
 from __future__ import annotations
 
 import os
@@ -35,10 +23,6 @@ FEATURE_GROUP_NAME = os.environ.get("FEATURE_GROUP_NAME", "pulsecommerce-user-be
 CHURN_ENDPOINT_NAME = os.environ.get("CHURN_ENDPOINT_NAME", "pulsecommerce-churn-v1")
 FRAUD_SCORE_THRESHOLD = float(os.environ.get("FRAUD_SCORE_THRESHOLD", "0.7"))
 
-
-# ---------------------------------------------------------------------------
-# Response models
-# ---------------------------------------------------------------------------
 
 class UserProfile(BaseModel):
     user_id_hashed: str
@@ -95,10 +79,6 @@ class LtvSegmentRow(BaseModel):
     pct_of_total: float
 
 
-# ---------------------------------------------------------------------------
-# Helper: run Redshift query
-# ---------------------------------------------------------------------------
-
 async def _run_redshift_query(client: Any, sql: str) -> list[dict[str, Any]]:
     try:
         stmt = client.execute_statement(
@@ -122,10 +102,6 @@ async def _run_redshift_query(client: Any, sql: str) -> list[dict[str, Any]]:
         raise HTTPException(status_code=503, detail=f"Redshift error: {exc}") from exc
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
 @router.get("/{user_id_hashed}", response_model=UserProfile)
 @limiter.limit("60/minute")
 async def get_user_profile(
@@ -136,14 +112,7 @@ async def get_user_profile(
     sm_runtime: Any = Depends(get_sm_runtime_client),
     sm_fs: Any = Depends(get_sm_featurestore_client),
 ) -> UserProfile:
-    """
-    Return a user's current profile from `gold.dim_users`, combined with:
-    - 90-day order stats from `gold.fct_orders`
-    - Real-time churn score from SageMaker endpoint (optional)
-
-    Churn score is fetched via Feature Store Online → SageMaker endpoint.
-    Set `include_churn_score=false` for lower-latency reads.
-    """
+    # set include_churn_score=false for lower-latency reads when churn isn't needed
     sql = f"""
         SELECT
             du.user_id_hashed,
@@ -196,11 +165,6 @@ async def get_user_features(
     user_id_hashed: str,
     sm_fs: Any = Depends(get_sm_featurestore_client),
 ) -> FeatureRecord:
-    """
-    Return the latest behavioral features for a user from the SageMaker
-    Feature Store Online store. Sub-millisecond latency — suitable for
-    real-time personalisation use cases.
-    """
     feature_names = [
         "user_id_hashed", "feature_timestamp",
         "days_since_last_order", "days_since_last_session",
@@ -260,10 +224,6 @@ async def get_user_orders(
     status_filter: str | None = Query(None, description="Filter by order status"),
     redshift: Any = Depends(get_redshift_client),
 ) -> OrdersResponse:
-    """
-    Return paginated order history for a user from `gold.fct_orders`.
-    Results are ordered by order_date DESC (most recent first).
-    """
     offset = (page - 1) * page_size
     status_clause = f"AND fo.status = '{status_filter}'" if status_filter else ""
 
@@ -319,11 +279,6 @@ async def get_ltv_segments(
     request: Request,
     redshift: Any = Depends(get_redshift_client),
 ) -> list[LtvSegmentRow]:
-    """
-    Return LTV band distribution: user counts, average LTV, and percentage
-    of total user base per band. Useful for BI dashboards.
-    Backed by Redshift materialized view — sub-second response.
-    """
     sql = """
         SELECT
             ltv_band,
@@ -354,21 +309,12 @@ async def get_ltv_segments(
     ]
 
 
-# ---------------------------------------------------------------------------
-# Internal helper: fetch churn score from Feature Store + endpoint
-# ---------------------------------------------------------------------------
-
 async def _get_churn_score(
     user_id_hashed: str,
     sm_fs: Any,
     sm_runtime: Any,
 ) -> float | None:
-    """
-    1. Fetch feature vector from Feature Store Online.
-    2. Invoke SageMaker endpoint with CSV payload.
-    Returns None on any error (fail-open).
-    """
-    # Feature order must match train.py FEATURE_NAMES
+    # feature order must match train.py FEATURE_NAMES
     inference_features = [
         "days_since_last_order", "days_since_last_session",
         "session_count_7d", "session_count_30d",

@@ -1,11 +1,3 @@
--- =============================================================================
--- gold/dim_channels.sql
--- =============================================================================
--- Marketing channel dimension — derived from ad attribution + session referrer.
--- Collapsed into standard channel groups for BI reporting.
--- Materialisation: table (full refresh)
--- =============================================================================
-
 {{
     config(
         materialized    = 'table',

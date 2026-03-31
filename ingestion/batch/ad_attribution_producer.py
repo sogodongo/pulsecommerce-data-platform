@@ -28,9 +28,7 @@ logger.setLevel(logging.INFO)
 
 TOPIC = "prod.ecommerce.ad-attribution.v1"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Canonical attribution record
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class AttributionRecord:
@@ -59,9 +57,7 @@ class AttributionRecord:
         return d
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Kafka producer setup
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _build_producer() -> Producer:
     msk_brokers = _get_secret("MSK_BROKERS") or os.environ["MSK_BROKERS"]
@@ -87,9 +83,7 @@ def _delivery_callback(err, msg) -> None:
         logger.debug("Delivered to %s [%d] @ offset %d", msg.topic(), msg.partition(), msg.offset())
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# AWS Secrets Manager helper
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _get_secret(secret_name: str) -> str | None:
     """Fetch a secret from AWS Secrets Manager. Returns None on failure."""
@@ -101,9 +95,7 @@ def _get_secret(secret_name: str) -> str | None:
         return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Facebook Marketing API
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def fetch_facebook_attribution(report_date: date) -> list[AttributionRecord]:
@@ -181,9 +173,7 @@ def fetch_facebook_attribution(report_date: date) -> list[AttributionRecord]:
     return records
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Google Ads API
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def fetch_google_attribution(report_date: date) -> list[AttributionRecord]:
@@ -255,9 +245,7 @@ def fetch_google_attribution(report_date: date) -> list[AttributionRecord]:
     return records
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Producer
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def normalize_and_produce(records: list[AttributionRecord], producer: Producer) -> int:
     """Serialize records to JSON and produce to MSK. Returns records produced."""
@@ -280,9 +268,7 @@ def normalize_and_produce(records: list[AttributionRecord], producer: Producer) 
     return produced
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Lambda / CLI entrypoint
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def handler(event: dict, context) -> dict:
     """

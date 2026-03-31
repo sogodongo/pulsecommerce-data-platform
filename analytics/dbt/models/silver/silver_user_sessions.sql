@@ -1,14 +1,3 @@
--- =============================================================================
--- silver/silver_user_sessions.sql
--- =============================================================================
--- Reference model: exposes silver.user_sessions to the Gold layer.
--- Applies the incremental lookback window and light cleaning.
--- Gold fact/dim models JOIN against this CTE — no direct Iceberg scan per model.
---
--- Materialisation: incremental (merge on session_id)
--- Partition:       session_date
--- =============================================================================
-
 {{
     config(
         materialized          = 'incremental',

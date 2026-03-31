@@ -1,33 +1,3 @@
-# =============================================================================
-# tests/integration/test_bronze_to_silver_pipeline.py
-# =============================================================================
-# Integration tests for processing/glue/bronze_to_silver_events.py
-#
-# Strategy:
-#   - awsglue (not available outside Glue runtime) is stubbed via sys.modules
-#     before the source module is imported, matching the pattern used in the
-#     PyFlink unit tests.
-#   - A local PySpark SparkSession (master="local[2]") substitutes for the
-#     Glue-managed SparkSession. Functions under test accept plain DataFrames
-#     so no Glue DynamicFrame conversion is required.
-#   - moto mocks DynamoDB for bookmark (get_last_snapshot_id / save_snapshot_id)
-#     without touching real AWS.
-#   - Each pipeline stage is exercised individually then composed into a full
-#     end-to-end pipeline test.
-#
-# Coverage:
-#   ✓ Bookmark read / write (DynamoDB)
-#   ✓ Deduplication by event_id (latest ingested_at wins)
-#   ✓ Bot, internal, and CRITICAL-DQ filtering
-#   ✓ HMAC-SHA256 PII masking (user_id_hashed)
-#   ✓ GDPR city masking for EU/UK/EEA countries
-#   ✓ Raw PII column drops (user_id, geo_lat, geo_lon, raw_payload)
-#   ✓ Geo region derivation (EMEA / APAC / AMER / LATAM / OTHER / UNKNOWN)
-#   ✓ Silver schema selection + missing column back-fill as null
-#   ✓ Full pipeline composition (deduplicate → filter → mask → enrich → derive → schema)
-#   ✓ Empty Bronze input short-circuits cleanly
-# =============================================================================
-
 from __future__ import annotations
 
 import hashlib
@@ -54,11 +24,6 @@ from pyspark.sql.types import (
     StructType,
     TimestampType,
 )
-
-
-# ---------------------------------------------------------------------------
-# Stub out awsglue (not available in the test runner)
-# ---------------------------------------------------------------------------
 
 def _make_awsglue_stubs() -> None:
     """Inject minimal awsglue stub modules before importing bronze_to_silver_events."""
@@ -102,13 +67,7 @@ def _make_awsglue_stubs() -> None:
     sys.modules["pyspark.context"] = sys.modules.get("pyspark.context") or types.ModuleType("pyspark.context")
     sys.modules["pyspark.context"].SparkContext = _RealSC
 
-
 _make_awsglue_stubs()
-
-
-# ---------------------------------------------------------------------------
-# SparkSession — session-scoped so startup cost is paid once
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
 def spark() -> SparkSession:
@@ -124,11 +83,6 @@ def spark() -> SparkSession:
     session.sparkContext.setLogLevel("ERROR")
     yield session
     session.stop()
-
-
-# ---------------------------------------------------------------------------
-# Bronze schema — matches what Flink's bronze_writer produces
-# ---------------------------------------------------------------------------
 
 BRONZE_SCHEMA = StructType([
     StructField("event_id",          StringType(),    False),
@@ -162,10 +116,8 @@ BRONZE_SCHEMA = StructType([
     StructField("dq_flag",           StringType(),    True),
 ])
 
-
 def _ts(iso: str) -> datetime:
     return datetime.fromisoformat(iso).replace(tzinfo=None)
-
 
 def _make_row(**overrides) -> dict[str, Any]:
     defaults = dict(
@@ -202,10 +154,6 @@ def _make_row(**overrides) -> dict[str, Any]:
     defaults.update(overrides)
     return defaults
 
-
-# ---------------------------------------------------------------------------
-# Import the module under test AFTER stubs are in place
-# ---------------------------------------------------------------------------
 # We import individual functions rather than triggering main(). The module-level
 # SparkContext / GlueContext calls are present but their side effects are
 # benign because we've stubbed them out.
@@ -232,8 +180,6 @@ with (
         # We only import the pure transformation functions we want to test
         pass
 
-
-# ---------------------------------------------------------------------------
 # Helper: import pure functions without triggering Spark/Glue init
 #
 # Because the module runs code at import time (SparkContext(), GlueContext(),
@@ -244,8 +190,6 @@ with (
 # The alternative — refactoring the source into an importable library — is
 # a production concern. This approach validates behaviour without modifying
 # the Glue job structure that AWS expects.
-# ---------------------------------------------------------------------------
-
 PII_SALT = "test-salt-abc123"
 GDPR_COUNTRIES = {
     "AT","BE","BG","CY","CZ","DE","DK","EE","ES","FI","FR","GR","HR","HU",
@@ -281,11 +225,9 @@ SILVER_COLUMNS = [
     "event_date",
 ]
 
-
 # Pure Python reference for HMAC — used to compute expected values in assertions
 def _expected_hmac(value: str) -> str:
     return hmac.new(PII_SALT.encode(), value.encode(), hashlib.sha256).hexdigest()
-
 
 # Local re-implementations of the transformation functions (identical logic)
 
@@ -298,7 +240,6 @@ def _deduplicate(df):
           .drop("_rn")
     )
 
-
 def _filter_events(df):
     return df.filter(
         (F.col("is_bot") == False) &
@@ -306,13 +247,11 @@ def _filter_events(df):
         (F.col("dq_flag") != "CRITICAL")
     )
 
-
 @F.udf("string")
 def _hmac_sha256(value):
     if value is None:
         return None
     return hmac.new(PII_SALT.encode(), value.encode(), hashlib.sha256).hexdigest()
-
 
 def _mask_pii(df):
     return (
@@ -325,13 +264,11 @@ def _mask_pii(df):
         .drop("user_id", "geo_lat", "geo_lon", "raw_payload", "is_bot", "is_internal")
     )
 
-
 @F.udf("string")
 def _derive_region(country):
     if country is None:
         return "UNKNOWN"
     return COUNTRY_REGION.get(country, "OTHER")
-
 
 def _add_derived_columns(df):
     return (
@@ -341,18 +278,12 @@ def _add_derived_columns(df):
         .withColumn("event_date", F.to_date(F.col("event_ts")))
     )
 
-
 def _select_silver_schema(df):
     existing = set(df.columns)
     for col in SILVER_COLUMNS:
         if col not in existing:
             df = df.withColumn(col, F.lit(None).cast("string"))
     return df.select(*SILVER_COLUMNS)
-
-
-# ---------------------------------------------------------------------------
-# DynamoDB bookmark tests
-# ---------------------------------------------------------------------------
 
 @mock_aws
 class TestDynamoBookmarks:
@@ -401,11 +332,6 @@ class TestDynamoBookmarks:
         resp = self._table.get_item(Key={"job_name": "partial-item"})
         snapshot_id = int(resp.get("Item", {}).get("last_snapshot_id", 0))
         assert snapshot_id == 0
-
-
-# ---------------------------------------------------------------------------
-# Deduplication tests
-# ---------------------------------------------------------------------------
 
 class TestDeduplicate:
 
@@ -466,11 +392,6 @@ class TestDeduplicate:
         result = _deduplicate(df)
         assert result.count() == 0
 
-
-# ---------------------------------------------------------------------------
-# Filter tests
-# ---------------------------------------------------------------------------
-
 class TestFilterEvents:
 
     def test_clean_row_passes(self, spark):
@@ -519,11 +440,6 @@ class TestFilterEvents:
         result = _filter_events(df)
         assert result.count() == 1
         assert result.collect()[0]["event_id"] == "clean"
-
-
-# ---------------------------------------------------------------------------
-# PII masking tests
-# ---------------------------------------------------------------------------
 
 class TestMaskPii:
 
@@ -601,11 +517,6 @@ class TestMaskPii:
         hashes = {row["user_id_hashed"] for row in result.collect()}
         assert len(hashes) == 2
 
-
-# ---------------------------------------------------------------------------
-# Geo region derivation tests
-# ---------------------------------------------------------------------------
-
 class TestAddDerivedColumns:
 
     def test_us_maps_to_amer(self, spark):
@@ -667,11 +578,6 @@ class TestAddDerivedColumns:
             result = _add_derived_columns(df)
             assert result.collect()[0]["geo_region"] == "APAC", f"{country} should be APAC"
 
-
-# ---------------------------------------------------------------------------
-# Silver schema selection tests
-# ---------------------------------------------------------------------------
-
 class TestSelectSilverSchema:
 
     def _enriched_df(self, spark):
@@ -713,11 +619,6 @@ class TestSelectSilverSchema:
         result = _select_silver_schema(df)
         for banned in ("user_id", "geo_lat", "geo_lon", "raw_payload", "is_bot", "is_internal"):
             assert banned not in result.columns
-
-
-# ---------------------------------------------------------------------------
-# Full pipeline composition
-# ---------------------------------------------------------------------------
 
 class TestFullPipeline:
     """
@@ -830,11 +731,6 @@ class TestFullPipeline:
         row = result.collect()[0]
         assert row["event_type"] == "search"
         assert row["search_query"] == "running shoes"
-
-
-# ---------------------------------------------------------------------------
-# Product enrichment join
-# ---------------------------------------------------------------------------
 
 class TestProductEnrichment:
     """Tests the LEFT JOIN with silver.product_catalog (simulated as a temp view)."""

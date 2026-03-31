@@ -1,13 +1,3 @@
--- =============================================================================
--- gold/dim_products.sql
--- =============================================================================
--- Product dimension — full refresh from silver.product_catalog.
--- Adds surrogate key, price_band, and pipe-delimited tags for
--- Redshift Spectrum compatibility (Redshift doesn't support ARRAY natively).
---
--- Materialisation: table (full refresh — ~100K SKUs, fast to rebuild)
--- =============================================================================
-
 {{
     config(
         materialized    = 'table',

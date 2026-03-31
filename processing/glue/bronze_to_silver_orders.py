@@ -1,29 +1,3 @@
-"""
-processing/glue/bronze_to_silver_orders.py
-
-AWS Glue 5.0 ELT Job — Bronze CDC → Silver Orders (SCD Type 2)
-================================================================
-Processes Debezium CDC records from bronze.orders_cdc and produces a
-history-preserving SCD Type 2 table in silver.orders_unified.
-
-CDC operation handling:
-  - op='c' (INSERT) or op='r' (snapshot): insert new current record
-  - op='u' (UPDATE): close previous version (effective_to = now, is_current=False)
-                     + insert new current version
-  - op='d' (DELETE): close current record with status='deleted'
-
-Deduplication strategy:
-  - CDC events are ordered by cdc_lsn (PostgreSQL Log Sequence Number)
-  - LSN is monotonically increasing per Postgres replication slot
-  - Latest LSN per order_id wins for any given batch
-
-PII masking:
-  - user_id → HMAC-SHA256(user_id + salt) before Silver write
-
-Schedule: Every 15 minutes via Airflow silver_refresh_dag.py
-Workers:  G.1X, autoscale 5–15 workers
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -42,7 +16,6 @@ from pyspark.sql.types import BooleanType, DoubleType, IntegerType, LongType, St
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-# ── Job parameters ────────────────────────────────────────────────────────────
 args = getResolvedOptions(sys.argv, [
     "JOB_NAME",
     "LAKEHOUSE_BUCKET",
@@ -57,7 +30,6 @@ PII_SALT      = args["PII_SALT"]
 AWS_REGION    = args["AWS_REGION"]
 LAST_SNAPSHOT = int(args.get("LAST_SNAPSHOT_ID", "0"))
 
-# ── Spark / Glue context ──────────────────────────────────────────────────────
 sc          = SparkContext()
 glueContext = GlueContext(sc)
 spark: SparkSession = glueContext.spark_session
@@ -79,10 +51,6 @@ for key, value in [
 ]:
     spark.conf.set(key, value)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Bookmark helpers (reuse same DynamoDB table)
-# ─────────────────────────────────────────────────────────────────────────────
 
 import boto3
 
@@ -109,20 +77,12 @@ def save_bookmark(key: str, snapshot_id: int) -> None:
         logger.error("Bookmark save failed for %s: %s", key, exc)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PII
-# ─────────────────────────────────────────────────────────────────────────────
-
 @F.udf("string")
 def hmac_sha256(value: str) -> str:
     if not value:
         return None
     return hmac.new(PII_SALT.encode(), value.encode(), hashlib.sha256).hexdigest()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 1: Incremental Bronze CDC read (orders table only)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def read_bronze_cdc() -> tuple[DataFrame, int]:
     last_snapshot = LAST_SNAPSHOT if LAST_SNAPSHOT > 0 else get_bookmark(JOB_NAME)
@@ -146,21 +106,15 @@ def read_bronze_cdc() -> tuple[DataFrame, int]:
             .table("glue_catalog.bronze.orders_cdc")
         )
 
-    # Filter to orders table rows only (ignore order_items / users / payments in this job)
+    # This CDC topic covers multiple tables — filter to orders rows only
     orders_df = df.filter(F.col("cdc_source_table") == "orders")
     logger.info("CDC records to process (orders): %d", orders_df.count())
     return orders_df, current_snapshot
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 2: Deduplicate by (order_id, cdc_lsn) — keep latest LSN per order
-# ─────────────────────────────────────────────────────────────────────────────
-
 def deduplicate_cdc(df: DataFrame) -> DataFrame:
-    """
-    For the same order_id, keep only the highest LSN record in this batch.
-    Multiple CDC events may arrive for the same order if there were rapid updates.
-    """
+    # Multiple CDC events can land for the same order in one batch (rapid updates).
+    # LSN is monotonically increasing per Postgres replication slot — highest wins.
     w = Window.partitionBy("order_id").orderBy(F.desc("cdc_lsn"))
     return (
         df.withColumn("_rn", F.row_number().over(w))
@@ -169,15 +123,7 @@ def deduplicate_cdc(df: DataFrame) -> DataFrame:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 3: Build new Silver records with SCD2 fields
-# ─────────────────────────────────────────────────────────────────────────────
-
 def build_silver_records(df: DataFrame) -> DataFrame:
-    """
-    Transform Bronze CDC events into Silver SCD Type 2 format.
-    Each record represents a new version of an order.
-    """
     now = F.current_timestamp()
 
     return (
@@ -186,19 +132,18 @@ def build_silver_records(df: DataFrame) -> DataFrame:
         .withColumn("effective_from",  F.col("updated_at"))
         .withColumn("effective_to",    F.lit(None).cast(TimestampType()))  # NULL = current
         .withColumn("is_current",      F.lit(True))
-        .withColumn("record_version",  F.lit(1))  # will be computed properly in merge
+        .withColumn("record_version",  F.lit(1))  # computed properly in merge
         .withColumn("processed_at",    now)
         .withColumn("updated_date",    F.to_date(F.col("updated_at")))
-        # Compute prev_status from before-image (op='u' only — otherwise null)
+        # In Bronze, status holds the after-image for op='u'
         .withColumn("prev_status",
-            F.when(F.col("cdc_operation") == "u", F.col("status"))  # in Bronze, status = after-image
+            F.when(F.col("cdc_operation") == "u", F.col("status"))
              .otherwise(F.lit(None).cast(StringType()))
         )
         .withColumn("status_changed_at",
             F.when(F.col("cdc_operation").isin(["c", "u", "r"]), F.col("updated_at"))
              .otherwise(F.lit(None).cast(TimestampType()))
         )
-        # Map deleted CDC records to a 'deleted' status
         .withColumn("status",
             F.when(F.col("cdc_operation") == "d", F.lit("deleted"))
              .otherwise(F.col("status"))
@@ -233,24 +178,11 @@ def build_silver_records(df: DataFrame) -> DataFrame:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 4: SCD Type 2 MERGE into silver.orders_unified
-#
-# Pattern:
-#   a) Close the current version of any order being updated
-#      (set effective_to = new.effective_from, is_current = false)
-#   b) Insert the new version as is_current = true
-#
-# Iceberg MERGE does not support the two-row SCD2 pattern in a single statement.
-# We use a two-step approach:
-#   1. UPDATE existing current rows to close them
-#   2. INSERT new rows as current
-# ─────────────────────────────────────────────────────────────────────────────
-
+# Iceberg MERGE doesn't support the two-row SCD2 pattern in a single statement,
+# so we close superseded versions first then insert the new current row separately.
 def merge_scd2(new_df: DataFrame) -> None:
     new_df.createOrReplaceTempView("cdc_updates")
 
-    # Step 4a: Close superseded current records
     spark.sql("""
         MERGE INTO glue_catalog.silver.orders_unified AS target
         USING cdc_updates AS source
@@ -264,7 +196,6 @@ def merge_scd2(new_df: DataFrame) -> None:
     """)
     logger.info("SCD2 Step 1: closed superseded versions")
 
-    # Step 4b: Insert new current versions
     spark.sql("""
         INSERT INTO glue_catalog.silver.orders_unified
         SELECT
@@ -288,10 +219,6 @@ def merge_scd2(new_df: DataFrame) -> None:
     """)
     logger.info("SCD2 Step 2: inserted new current versions")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
     cdc_df, current_snapshot = read_bronze_cdc()

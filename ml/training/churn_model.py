@@ -1,23 +1,3 @@
-# =============================================================================
-# ml/training/churn_model.py
-# =============================================================================
-# SageMaker Training Job launcher for the PulseCommerce churn XGBoost model.
-#
-# Responsibilities:
-#   1. Configure and launch a SageMaker Training Job
-#   2. Monitor job progress, stream CloudWatch logs
-#   3. Register the trained model in SageMaker Model Registry
-#   4. Optionally deploy to a real-time endpoint
-#
-# This module is the programmatic interface used by:
-#   - The Airflow churn_model_retrain_dag (production)
-#   - Manual CLI invocation for ad-hoc retraining
-#   - CI/CD pipeline for integration testing with a smaller dataset
-#
-# The actual training logic lives in ml/training/src/train.py (executed
-# inside the SageMaker managed container).
-# =============================================================================
-
 from __future__ import annotations
 
 import json
@@ -33,22 +13,16 @@ import boto3
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 AWS_ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "")
 SAGEMAKER_ROLE_ARN = os.environ.get("SAGEMAKER_ROLE_ARN", "")
 LAKEHOUSE_BUCKET = os.environ.get("LAKEHOUSE_BUCKET", "")
 FEATURE_GROUP_NAME = os.environ.get("FEATURE_GROUP_NAME", "pulsecommerce-user-behavioral")
 
-# SageMaker XGBoost container (us-east-1)
 XGBOOST_IMAGE_URI = (
     f"683313688378.dkr.ecr.{AWS_REGION}.amazonaws.com/sagemaker-xgboost:1.7-1"
 )
 
-# Model quality thresholds
 MIN_AUC_ROC = float(os.environ.get("CHURN_MIN_AUC_ROC", "0.80"))
 MIN_PRECISION = float(os.environ.get("CHURN_MIN_PRECISION", "0.65"))
 
@@ -62,18 +36,13 @@ DEFAULT_HYPERPARAMETERS = {
     "objective": "binary:logistic",
     "num_round": "200",
     "eval_metric": "auc",
-    "scale_pos_weight": "3",      # ~3:1 class imbalance
+    "scale_pos_weight": "3",      # ~3:1 class imbalance in training data
     "seed": "42",
 }
 
 
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
-
 @dataclass
 class TrainingConfig:
-    """Configuration for a single churn model training run."""
     train_s3_uri: str
     validation_s3_uri: str
     output_s3_prefix: str
@@ -92,19 +61,14 @@ class TrainingConfig:
 
 @dataclass
 class TrainingResult:
-    """Result of a completed SageMaker Training Job."""
     job_name: str
-    status: str                    # Completed / Failed / Stopped
+    status: str
     metrics: dict[str, float]
     model_artifact_s3: str
     training_time_seconds: float
     passed_quality_gate: bool
-    model_package_arn: str = ""    # set after Model Registry registration
+    model_package_arn: str = ""
 
-
-# ---------------------------------------------------------------------------
-# Training Job launcher
-# ---------------------------------------------------------------------------
 
 class ChurnModelTrainer:
     """
@@ -112,18 +76,11 @@ class ChurnModelTrainer:
 
     Usage:
         trainer = ChurnModelTrainer()
-        config = TrainingConfig(
-            train_s3_uri="s3://bucket/ml/train/",
-            validation_s3_uri="s3://bucket/ml/val/",
-            output_s3_prefix="s3://bucket/ml/model-output/",
-        )
-        result = trainer.run(config)
+        result = trainer.run(TrainingConfig(train_s3_uri=..., validation_s3_uri=..., output_s3_prefix=...))
     """
 
     def __init__(self, sm_client: Any | None = None) -> None:
         self._sm = sm_client or boto3.client("sagemaker", region_name=AWS_REGION)
-
-    # ── Public API ──────────────────────────────────────────────────────────
 
     def run(self, config: TrainingConfig, register: bool = True) -> TrainingResult:
         """Launch training, wait for completion, optionally register in Model Registry."""
@@ -140,8 +97,6 @@ class ChurnModelTrainer:
             arn = self._register(config, result)
             result.model_package_arn = arn
         return result
-
-    # ── Private helpers ─────────────────────────────────────────────────────
 
     def _launch(self, config: TrainingConfig) -> None:
         logger.info("Launching training job: %s", config.job_name)
@@ -198,7 +153,6 @@ class ChurnModelTrainer:
         logger.info("Training job submitted: %s", config.job_name)
 
     def _wait(self, config: TrainingConfig) -> TrainingResult:
-        """Poll until job terminal state. Returns TrainingResult."""
         start_ts = time.time()
         terminal_states = {"Completed", "Failed", "Stopped"}
 
@@ -206,25 +160,16 @@ class ChurnModelTrainer:
             resp = self._sm.describe_training_job(TrainingJobName=config.job_name)
             status = resp["TrainingJobStatus"]
             elapsed = time.time() - start_ts
-
-            logger.info(
-                "Job %s status=%s elapsed=%.0fs",
-                config.job_name, status, elapsed
-            )
-
+            logger.info("Job %s status=%s elapsed=%.0fs", config.job_name, status, elapsed)
             if status in terminal_states:
                 break
-
             time.sleep(30)
 
         metrics = {
             m["MetricName"]: m["Value"]
             for m in resp.get("FinalMetricDataList", [])
         }
-        model_artifact = (
-            resp.get("ModelArtifacts", {})
-            .get("S3ModelArtifacts", "")
-        )
+        model_artifact = resp.get("ModelArtifacts", {}).get("S3ModelArtifacts", "")
         auc = metrics.get("validation:auc", 0.0)
         passed = auc >= MIN_AUC_ROC
 
@@ -243,9 +188,7 @@ class ChurnModelTrainer:
         )
 
     def _register(self, config: TrainingConfig, result: TrainingResult) -> str:
-        """Register the model package in SageMaker Model Registry."""
         auc = result.metrics.get("validation:auc", 0.0)
-
         resp = self._sm.create_model_package(
             ModelPackageGroupName="pulsecommerce-churn",
             ModelPackageDescription=(
@@ -273,14 +216,10 @@ class ChurnModelTrainer:
         return arn
 
 
-# ---------------------------------------------------------------------------
-# Endpoint deployer
-# ---------------------------------------------------------------------------
-
 class ChurnEndpointDeployer:
     """
     Creates or updates a SageMaker real-time endpoint for churn inference.
-    Implements blue/green: creates a new endpoint config then calls UpdateEndpoint.
+    Blue/green: creates a new endpoint config then calls UpdateEndpoint on the existing one.
     """
 
     def __init__(self, sm_client: Any | None = None) -> None:
@@ -293,10 +232,7 @@ class ChurnEndpointDeployer:
         instance_type: str = "ml.c5.xlarge",
         instance_count: int = 2,
     ) -> str:
-        """
-        Deploy a model package to an endpoint. Returns the endpoint ARN.
-        Creates the endpoint if it doesn't exist; updates it otherwise.
-        """
+        """Returns the endpoint ARN. Creates if not exists; updates otherwise."""
         ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         model_name = f"pulsecommerce-churn-{ts}"
         config_name = f"pulsecommerce-churn-config-{ts}"
@@ -342,10 +278,6 @@ class ChurnEndpointDeployer:
         desc = self._sm.describe_endpoint(EndpointName=endpoint_name)
         return desc["EndpointArn"]
 
-
-# ---------------------------------------------------------------------------
-# CLI entrypoint
-# ---------------------------------------------------------------------------
 
 def _cli() -> None:
     import argparse

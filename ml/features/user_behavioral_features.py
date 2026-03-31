@@ -1,20 +1,3 @@
-# =============================================================================
-# ml/features/user_behavioral_features.py
-# =============================================================================
-# SageMaker Feature Store — user behavioral feature definitions and ingestion.
-#
-# Defines the Feature Group schema for the offline + online store, and
-# provides a batch ingestion function that computes features from the Gold
-# layer (dim_users + fct_orders + fct_sessions) via a Glue Spark job.
-#
-# Feature Group: "pulsecommerce-user-behavioral"
-# Primary key:   user_id_hashed  (string)
-# Event time:    feature_timestamp (ISO-8601 string → SageMaker epoch)
-#
-# Online store:  real-time churn inference in churn_enrichment.py Flink job
-# Offline store: weekly model retraining (Athena query in Airflow DAG)
-# =============================================================================
-
 from __future__ import annotations
 
 import logging
@@ -30,32 +13,23 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 FEATURE_GROUP_NAME = os.environ.get("FEATURE_GROUP_NAME", "pulsecommerce-user-behavioral")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 SAGEMAKER_ROLE_ARN = os.environ.get("SAGEMAKER_ROLE_ARN", "")
 LAKEHOUSE_BUCKET = os.environ.get("LAKEHOUSE_BUCKET", "")
 
-# Offline store S3 prefix
 OFFLINE_STORE_PREFIX = f"s3://{LAKEHOUSE_BUCKET}/ml/feature-store/"
 
-# SageMaker Feature Store feature definitions
 # Maps Python type → SageMaker FeatureType
 FEATURE_DEFINITIONS = [
-    # ── Identifiers ──────────────────────────────────────────────────────────
     {"FeatureName": "user_id_hashed",          "FeatureType": "String"},
-    {"FeatureName": "feature_timestamp",        "FeatureType": "String"},   # event time
+    {"FeatureName": "feature_timestamp",        "FeatureType": "String"},
 
-    # ── Recency / activity ────────────────────────────────────────────────────
     {"FeatureName": "days_since_last_order",    "FeatureType": "Fractional"},
     {"FeatureName": "days_since_last_session",  "FeatureType": "Fractional"},
     {"FeatureName": "session_count_7d",         "FeatureType": "Integral"},
     {"FeatureName": "session_count_30d",        "FeatureType": "Integral"},
 
-    # ── Purchase behaviour ────────────────────────────────────────────────────
     {"FeatureName": "order_count_30d",          "FeatureType": "Integral"},
     {"FeatureName": "order_count_90d",          "FeatureType": "Integral"},
     {"FeatureName": "order_frequency_30d",      "FeatureType": "Fractional"},   # orders/week
@@ -64,29 +38,25 @@ FEATURE_DEFINITIONS = [
     {"FeatureName": "max_order_value_usd",      "FeatureType": "Fractional"},
     {"FeatureName": "discount_usage_rate",      "FeatureType": "Fractional"},   # % orders with discount
 
-    # ── Engagement ────────────────────────────────────────────────────────────
     {"FeatureName": "cart_abandonment_rate",    "FeatureType": "Fractional"},
     {"FeatureName": "avg_session_duration_s",   "FeatureType": "Fractional"},
     {"FeatureName": "avg_pages_per_session",    "FeatureType": "Fractional"},
     {"FeatureName": "product_view_count_7d",    "FeatureType": "Integral"},
 
-    # ── Category / channel preferences (encoded) ─────────────────────────────
     {"FeatureName": "preferred_category_encoded",  "FeatureType": "Integral"},
     {"FeatureName": "channel_group_encoded",       "FeatureType": "Integral"},
 
-    # ── Risk / quality signals ────────────────────────────────────────────────
     {"FeatureName": "avg_fraud_score",          "FeatureType": "Fractional"},
     {"FeatureName": "refund_count_90d",         "FeatureType": "Integral"},
 
-    # ── Geography ─────────────────────────────────────────────────────────────
     {"FeatureName": "is_gdpr_scope",            "FeatureType": "Integral"},   # 0/1
 
-    # ── Label (for offline training only — not used in online inference) ──────
-    {"FeatureName": "churned_30d",              "FeatureType": "Integral"},   # 0/1
-    {"FeatureName": "is_current",               "FeatureType": "Integral"},   # 0/1
+    # label is written to offline store but never served from online
+    {"FeatureName": "churned_30d",              "FeatureType": "Integral"},
+    {"FeatureName": "is_current",               "FeatureType": "Integral"},
 ]
 
-# Category → integer encoding (deterministic, matches train.py)
+# Deterministic encoding — must stay in sync with train.py
 CATEGORY_ENCODING = {
     "Electronics": 0, "Clothing": 1, "Home & Garden": 2, "Sports": 3,
     "Books": 4, "Beauty": 5, "Toys": 6, "Food": 7, "Automotive": 8, "Other": 9,
@@ -98,15 +68,8 @@ CHANNEL_ENCODING = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Feature Group management
-# ---------------------------------------------------------------------------
-
 def create_feature_group(sm_client: Any | None = None) -> dict[str, Any]:
-    """
-    Create the SageMaker Feature Group (idempotent — skips if already exists).
-    Enables both online and offline stores.
-    """
+    """Idempotent — skips creation if the group already exists."""
     client = sm_client or boto3.client("sagemaker", region_name=AWS_REGION)
 
     try:
@@ -139,7 +102,6 @@ def create_feature_group(sm_client: Any | None = None) -> dict[str, Any]:
         ],
     )
 
-    # Wait for Created state
     for _ in range(30):
         status_resp = client.describe_feature_group(FeatureGroupName=FEATURE_GROUP_NAME)
         if status_resp["FeatureGroupStatus"] == "Created":
@@ -153,10 +115,6 @@ def create_feature_group(sm_client: Any | None = None) -> dict[str, Any]:
     logger.info("Feature Group '%s' is Created", FEATURE_GROUP_NAME)
     return response
 
-
-# ---------------------------------------------------------------------------
-# Feature computation (Spark SQL — runs in Glue job)
-# ---------------------------------------------------------------------------
 
 FEATURE_SQL = """
 WITH
@@ -225,13 +183,10 @@ geo AS (
 SELECT
     oa.user_id_hashed,
     current_timestamp()                                         AS feature_timestamp,
-    -- Recency
     COALESCE(oa.days_since_last_order, 999)                    AS days_since_last_order,
     COALESCE(sa.days_since_last_session, 999)                  AS days_since_last_session,
-    -- Activity
     COALESCE(sa.session_count_7d, 0)                           AS session_count_7d,
     COALESCE(sa.session_count_30d, 0)                          AS session_count_30d,
-    -- Purchase behaviour
     COALESCE(oa.order_count_30d, 0)                            AS order_count_30d,
     COALESCE(oa.order_count_90d, 0)                            AS order_count_90d,
     COALESCE(oa.order_count_30d / 4.0, 0.0)                   AS order_frequency_30d,
@@ -239,20 +194,16 @@ SELECT
     COALESCE(oa.total_ltv_usd, 0.0)                            AS total_ltv_usd,
     COALESCE(oa.max_order_value_usd, 0.0)                      AS max_order_value_usd,
     COALESCE(oa.discount_usage_rate, 0.0)                      AS discount_usage_rate,
-    -- Engagement
     COALESCE(sa.cart_abandonment_rate, 0.0)                    AS cart_abandonment_rate,
     COALESCE(sa.avg_session_duration_s, 0.0)                   AS avg_session_duration_s,
     COALESCE(sa.avg_pages_per_session, 0.0)                    AS avg_pages_per_session,
     COALESCE(sa.product_view_count_7d, 0)                      AS product_view_count_7d,
-    -- Encoded categoricals (default → "Other" = 9/7)
+    -- default → "Other" = 9/7
     COALESCE(cp.preferred_category, 'Other')                   AS preferred_category_raw,
     COALESCE(ch.channel_group, 'Other')                        AS channel_group_raw,
-    -- Risk
     COALESCE(oa.avg_fraud_score, 0.0)                          AS avg_fraud_score,
     COALESCE(oa.refund_count_90d, 0)                           AS refund_count_90d,
-    -- Geography
     COALESCE(g.is_gdpr_scope, false)                           AS is_gdpr_scope_bool,
-    -- Label
     COALESCE(oa.churned_30d, 0)                                AS churned_30d,
     1                                                           AS is_current
 FROM order_agg oa
@@ -269,13 +220,8 @@ def compute_features(spark: Any) -> "pyspark.sql.DataFrame":
 
     df = spark.sql(FEATURE_SQL)
 
-    # Encode categoricals to integers
-    category_map = CATEGORY_ENCODING
-    channel_map = CHANNEL_ENCODING
-
-    # Build CASE WHEN expressions via map lookup
-    category_expr = _build_map_expr("preferred_category_raw", category_map, default=9)
-    channel_expr = _build_map_expr("channel_group_raw", channel_map, default=7)
+    category_expr = _build_map_expr("preferred_category_raw", CATEGORY_ENCODING, default=9)
+    channel_expr = _build_map_expr("channel_group_raw", CHANNEL_ENCODING, default=7)
 
     df = (
         df
@@ -298,10 +244,6 @@ def _build_map_expr(col: str, mapping: dict[str, int], default: int) -> Any:
     return expr
 
 
-# ---------------------------------------------------------------------------
-# Batch ingestion → Feature Store
-# ---------------------------------------------------------------------------
-
 def ingest_to_feature_store(
     df_pandas: "pd.DataFrame",
     sm_feature_store_client: Any | None = None,
@@ -320,7 +262,6 @@ def ingest_to_feature_store(
 
     # Feature Store PutRecord expects list of {"FeatureName": ..., "ValueAsString": ...}
     feature_names = [f["FeatureName"] for f in FEATURE_DEFINITIONS]
-
     records = df_pandas[feature_names].to_dict(orient="records")
 
     for i in range(0, len(records), batch_size):
@@ -347,10 +288,6 @@ def ingest_to_feature_store(
     return {"success": success_count, "failed": failed_count}
 
 
-# ---------------------------------------------------------------------------
-# Glue job entrypoint
-# ---------------------------------------------------------------------------
-
 def run_as_glue_job() -> None:
     """Glue Python Shell / PySpark job entrypoint."""
     import sys
@@ -366,15 +303,12 @@ def run_as_glue_job() -> None:
     job = Job(glue_ctx)
     job.init(args["JOB_NAME"], args)
 
-    # Create Feature Group if it doesn't exist
     create_feature_group()
 
-    # Compute features from Gold layer
     df_spark = compute_features(spark)
     df_pandas = df_spark.toPandas()
     logger.info("Computed %d user feature records", len(df_pandas))
 
-    # Ingest to Feature Store
     result = ingest_to_feature_store(df_pandas)
     job.commit()
 
