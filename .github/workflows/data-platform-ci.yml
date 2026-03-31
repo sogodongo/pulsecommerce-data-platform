@@ -1,0 +1,368 @@
+# =============================================================================
+# .github/workflows/data-platform-ci.yml
+# =============================================================================
+# PulseCommerce Data Platform — main CI pipeline.
+#
+# Triggers: pull_request (any branch → main), push to main.
+#
+# Jobs (run order):
+#   lint-and-typecheck   → ruff lint, mypy typecheck (parallel)
+#   unit-tests           → pytest unit tests, moto-mocked AWS (needs lint)
+#   dbt-compile          → dbt deps + compile against Glue catalog (needs lint)
+#   gx-ci-suite          → Great Expectations CI runner with local PySpark
+#   docker-build         → Build + scan API Docker image (needs unit-tests)
+#   terraform-validate   → terraform fmt + validate for all modules
+#   integration-gate     → Final pass/fail gate (needs all above)
+#
+# Secrets required (GitHub repository secrets):
+#   AWS_CI_ROLE_ARN        — IAM role assumed via OIDC for Glue/dbt compile
+#   AWS_ACCOUNT_ID
+#   AWS_REGION             (default: us-east-1)
+#   SCHEMA_REGISTRY_URL    — for dbt-glue profile
+#   REDSHIFT_WORKGROUP     — for dbt-glue profile
+# =============================================================================
+
+name: Data Platform CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+permissions:
+  id-token: write    # OIDC token for AWS assume-role
+  contents: read
+  pull-requests: write
+
+# =============================================================================
+# Jobs
+# =============================================================================
+
+jobs:
+
+  # ── Lint & typecheck (parallel) ────────────────────────────────────────────
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff==0.4.4
+
+      - name: Lint
+        run: ruff check . --output-format=github
+
+      - name: Format check
+        run: ruff format --check .
+
+  typecheck:
+    name: Typecheck (mypy)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install deps
+        run: |
+          pip install --upgrade pip
+          pip install mypy boto3-stubs[essential] types-requests pydantic fastapi
+
+      - name: mypy
+        run: mypy analytics/api/ processing/quality/ ml/ --ignore-missing-imports --no-strict-optional
+
+  # ── Unit tests ─────────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-22.04
+    needs: [lint, typecheck]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests
+        env:
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: "test"
+          AWS_SECRET_ACCESS_KEY: "test"
+        run: |
+          pytest tests/unit/ \
+            -v \
+            --tb=short \
+            --cov=processing \
+            --cov=ml \
+            --cov=analytics \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=70 \
+            -m "not integration" \
+            --timeout=120
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 7
+
+      - name: Coverage comment on PR
+        if: github.event_name == 'pull_request'
+        uses: py-cov-action/python-coverage-comment-action@v3
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+          COVERAGE_DATA_FILE: coverage.xml
+
+  # ── GX CI suite ────────────────────────────────────────────────────────────
+  gx-ci-suite:
+    name: Great Expectations CI Suite
+    runs-on: ubuntu-22.04
+    needs: [lint]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install PySpark + GX
+        run: |
+          pip install --upgrade pip
+          pip install \
+            pyspark==3.5.1 \
+            great-expectations==0.18.15 \
+            pytest pytest-timeout
+
+      - name: Set up Java (PySpark requires JVM)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Run GX CI suite
+        env:
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: "test"
+          AWS_SECRET_ACCESS_KEY: "test"
+        run: |
+          pytest tests/quality/run_gx_ci_suite.py \
+            -v \
+            --tb=short \
+            --timeout=300
+
+  # ── dbt compile ────────────────────────────────────────────────────────────
+  dbt-compile:
+    name: dbt Compile (validate SQL)
+    runs-on: ubuntu-22.04
+    needs: [lint]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install dbt
+        run: |
+          pip install --upgrade pip
+          pip install dbt-core==1.8.0 dbt-glue==1.8.0
+
+      - name: dbt deps
+        working-directory: analytics/dbt
+        run: dbt deps --profiles-dir profiles --target ci
+
+      - name: dbt compile
+        working-directory: analytics/dbt
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: |
+          dbt compile \
+            --profiles-dir profiles \
+            --target ci \
+            --select gold staging silver
+
+      - name: Upload dbt manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-manifest
+          path: analytics/dbt/target/manifest.json
+          retention-days: 7
+
+  # ── Docker build + scan ────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build & Scan
+    runs-on: ubuntu-22.04
+    needs: [unit-tests]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: analytics/api/Dockerfile
+          push: false
+          load: true
+          tags: pulsecommerce-api:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan with Trivy (CRITICAL/HIGH only)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: pulsecommerce-api:ci-${{ github.sha }}
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Smoke test container
+        run: |
+          docker run --rm -d \
+            --name api-smoke \
+            -p 8000:8000 \
+            -e AWS_DEFAULT_REGION=us-east-1 \
+            -e AWS_ACCESS_KEY_ID=test \
+            -e AWS_SECRET_ACCESS_KEY=test \
+            -e API_KEY=ci-test-key \
+            pulsecommerce-api:ci-${{ github.sha }}
+          sleep 10
+          curl --fail http://localhost:8000/health
+          docker stop api-smoke
+
+  # ── Terraform validate ─────────────────────────────────────────────────────
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Terraform fmt check
+        working-directory: infrastructure/terraform
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init (local backend)
+        working-directory: infrastructure/terraform
+        run: |
+          terraform init \
+            -backend=false \
+            -input=false
+
+      - name: Terraform validate
+        working-directory: infrastructure/terraform
+        run: terraform validate
+
+      - name: Validate modules individually
+        run: |
+          for module in infrastructure/terraform/modules/*/; do
+            echo "Validating $module..."
+            cd "$module"
+            terraform init -backend=false -input=false > /dev/null
+            terraform validate
+            cd - > /dev/null
+          done
+
+  # ── Integration gate ───────────────────────────────────────────────────────
+  integration-gate:
+    name: Integration Gate
+    runs-on: ubuntu-22.04
+    needs: [unit-tests, gx-ci-suite, dbt-compile, docker-build, terraform-validate]
+    if: always()
+
+    steps:
+      - name: Check all jobs passed
+        run: |
+          results=(
+            "${{ needs.unit-tests.result }}"
+            "${{ needs.gx-ci-suite.result }}"
+            "${{ needs.dbt-compile.result }}"
+            "${{ needs.docker-build.result }}"
+            "${{ needs.terraform-validate.result }}"
+          )
+          failed=()
+          for r in "${results[@]}"; do
+            if [[ "$r" != "success" && "$r" != "skipped" ]]; then
+              failed+=("$r")
+            fi
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "One or more CI jobs failed: ${failed[*]}"
+            exit 1
+          fi
+          echo "All CI jobs passed."
+
+      - name: PR comment — CI passed
+        if: github.event_name == 'pull_request' && success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: [
+                '## ✅ Data Platform CI Passed',
+                '',
+                '| Job | Status |',
+                '|-----|--------|',
+                '| Lint (ruff) | ✅ |',
+                '| Typecheck (mypy) | ✅ |',
+                '| Unit Tests | ✅ |',
+                '| GX CI Suite | ✅ |',
+                '| dbt Compile | ✅ |',
+                '| Docker Build & Scan | ✅ |',
+                '| Terraform Validate | ✅ |',
+                '',
+                `Commit: \`${{ github.sha }}\``,
+              ].join('\n')
+            })

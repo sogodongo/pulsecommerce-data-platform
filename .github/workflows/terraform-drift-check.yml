@@ -1,0 +1,340 @@
+# =============================================================================
+# .github/workflows/terraform-drift-check.yml
+# =============================================================================
+# Scheduled Terraform drift detection — runs daily at 06:00 UTC.
+# Compares live AWS infrastructure against the Terraform state file.
+# Posts results as a GitHub issue comment or creates a new issue on drift.
+#
+# Also runs on:
+#   - Manual workflow_dispatch (for on-demand drift checks)
+#   - Push to main (post-merge validation)
+#
+# Secrets required:
+#   AWS_PROD_ROLE_ARN      — IAM role with ReadOnlyAccess + TF state S3 read
+#   AWS_ACCOUNT_ID
+#   AWS_REGION
+#   TF_STATE_BUCKET        — S3 bucket holding terraform.tfstate
+#   TF_STATE_KEY           — Key path within bucket (e.g. prod/terraform.tfstate)
+#   TF_LOCK_TABLE          — DynamoDB table for state locking
+#   TF_VAR_ADMIN_PASSWORD  — Redshift admin password (sensitive var)
+# =============================================================================
+
+name: Terraform Drift Check
+
+on:
+  schedule:
+    - cron: "0 6 * * *"    # Daily at 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      module:
+        description: "Specific module to check (leave blank for all)"
+        required: false
+        default: ""
+      post_issue:
+        description: "Create GitHub issue on drift detected"
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - "infrastructure/terraform/**"
+
+concurrency:
+  group: terraform-drift-${{ github.ref }}
+  cancel-in-progress: false    # Never cancel drift checks mid-run
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  TF_VERSION: "1.7.5"
+  TF_DIR: infrastructure/terraform
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+
+jobs:
+
+  # ── Terraform plan (drift detection) ──────────────────────────────────────
+  drift-check:
+    name: Terraform Plan (drift detection)
+    runs-on: ubuntu-22.04
+
+    outputs:
+      drift_detected: ${{ steps.plan.outputs.drift_detected }}
+      plan_summary: ${{ steps.plan.outputs.summary }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PROD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: TerraformDriftCheck
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform init (remote S3 backend)
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ secrets.TF_STATE_KEY }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+            -backend-config="encrypt=true" \
+            -input=false \
+            -reconfigure
+
+      - name: Select workspace
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform workspace select prod || terraform workspace new prod
+
+      - name: Terraform plan (detailed exit code)
+        id: plan
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_aws_account_id: ${{ secrets.AWS_ACCOUNT_ID }}
+          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+          TF_VAR_schema_registry_url: ${{ secrets.SCHEMA_REGISTRY_URL }}
+          TF_VAR_lakehouse_bucket_name: ${{ secrets.LAKEHOUSE_BUCKET_NAME }}
+          TF_VAR_glue_scripts_bucket_name: ${{ secrets.GLUE_SCRIPTS_BUCKET_NAME }}
+          TF_VAR_flink_checkpoints_bucket_name: ${{ secrets.FLINK_CHECKPOINTS_BUCKET_NAME }}
+          TF_VAR_redshift_admin_password: ${{ secrets.TF_VAR_ADMIN_PASSWORD }}
+          TF_VAR_alert_email: ""
+        run: |
+          set +e
+          terraform plan \
+            -detailed-exitcode \
+            -refresh=true \
+            -input=false \
+            -out=tfplan \
+            2>&1 | tee plan_output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+
+          echo "Terraform exit code: $EXIT_CODE"
+
+          # Exit codes: 0=no changes, 1=error, 2=changes present
+          if [ "$EXIT_CODE" -eq 0 ]; then
+            echo "drift_detected=false" >> "$GITHUB_OUTPUT"
+            echo "summary=No drift detected — infrastructure matches Terraform state." >> "$GITHUB_OUTPUT"
+          elif [ "$EXIT_CODE" -eq 2 ]; then
+            echo "drift_detected=true" >> "$GITHUB_OUTPUT"
+            # Extract summary line from plan output
+            SUMMARY=$(grep -E "^Plan:|^No changes" plan_output.txt | tail -1 || echo "Changes detected")
+            echo "summary=${SUMMARY}" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift_detected=error" >> "$GITHUB_OUTPUT"
+            echo "summary=Terraform plan failed with errors. Check logs." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Generate plan diff (human-readable)
+        if: steps.plan.outputs.drift_detected == 'true'
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform show -no-color tfplan > plan_human.txt
+          # Trim to 50k chars to fit in GitHub issue
+          head -c 50000 plan_human.txt > plan_trimmed.txt
+
+      - name: Upload plan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ github.run_id }}
+          path: |
+            ${{ env.TF_DIR }}/plan_output.txt
+            ${{ env.TF_DIR }}/plan_human.txt
+          retention-days: 14
+
+  # ── Report drift ──────────────────────────────────────────────────────────
+  report-drift:
+    name: Report Drift
+    runs-on: ubuntu-22.04
+    needs: drift-check
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download plan artifacts
+        if: needs.drift-check.outputs.drift_detected == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan-${{ github.run_id }}
+          path: artifacts/
+
+      - name: No drift — post success status
+        if: needs.drift-check.outputs.drift_detected == 'false'
+        run: |
+          echo "No infrastructure drift detected. All good."
+
+      - name: Drift detected — create GitHub issue
+        if: |
+          needs.drift-check.outputs.drift_detected == 'true' &&
+          (github.event_name == 'schedule' || github.event.inputs.post_issue == 'true')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let planDiff = '';
+            try {
+              planDiff = fs.readFileSync('artifacts/plan_trimmed.txt', 'utf8');
+            } catch (e) {
+              planDiff = 'Plan diff not available — check workflow artifacts.';
+            }
+
+            const summary = `${{ needs.drift-check.outputs.plan_summary }}`;
+            const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+            const today = new Date().toISOString().split('T')[0];
+
+            // Check for existing open drift issue
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'terraform-drift',
+            });
+
+            const issueBody = [
+              `## Terraform Infrastructure Drift Detected`,
+              '',
+              `**Date:** ${today}`,
+              `**Workflow run:** [${context.runId}](${runUrl})`,
+              `**Summary:** ${summary}`,
+              '',
+              '### What this means',
+              'The live AWS infrastructure no longer matches the Terraform state.',
+              'This could be caused by:',
+              '- Manual console changes',
+              '- Auto-scaling or auto-healing actions',
+              '- External processes modifying resources',
+              '',
+              '### Required action',
+              '1. Review the plan diff below',
+              '2. If changes are intentional: run `terraform import` or update `.tf` files',
+              '3. If changes are unintended: run `terraform apply` to restore desired state',
+              '',
+              '### Plan diff (truncated)',
+              '```hcl',
+              planDiff.substring(0, 30000),
+              '```',
+              '',
+              `> Auto-generated by Terraform Drift Check workflow on ${today}`,
+            ].join('\n');
+
+            if (existingIssues.data.length > 0) {
+              // Update existing issue with new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssues.data[0].number,
+                body: `### Drift still present — ${today}\n\n${summary}\n\n[Run details](${runUrl})`,
+              });
+              console.log(`Updated existing issue #${existingIssues.data[0].number}`);
+            } else {
+              // Create new issue
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `[Terraform Drift] Infrastructure drift detected — ${today}`,
+                body: issueBody,
+                labels: ['terraform-drift', 'infrastructure', 'high-priority'],
+              });
+              console.log(`Created issue #${issue.data.number}`);
+            }
+
+      - name: Drift detected — post PR comment (on push to main)
+        if: |
+          needs.drift-check.outputs.drift_detected == 'true' &&
+          github.event_name == 'push'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const summary = `${{ needs.drift-check.outputs.plan_summary }}`;
+            const runUrl = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+            console.log(`Drift detected after merge to main: ${summary}`);
+            console.log(`Review: ${runUrl}`);
+
+      - name: Close drift issue if resolved
+        if: needs.drift-check.outputs.drift_detected == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'terraform-drift',
+            });
+
+            for (const issue of existingIssues.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Drift resolved — \`terraform plan\` shows no changes as of ${new Date().toISOString().split('T')[0]}. Closing.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+              console.log(`Closed drift issue #${issue.number}`);
+            }
+
+  # ── Module-level drift check (manual trigger) ──────────────────────────────
+  module-drift:
+    name: Module Drift (${{ github.event.inputs.module || 'all' }})
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.module != ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PROD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform init
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ secrets.TF_STATE_KEY }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+            -input=false \
+            -reconfigure
+
+      - name: Targeted plan for module
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_aws_account_id: ${{ secrets.AWS_ACCOUNT_ID }}
+          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+          TF_VAR_schema_registry_url: ${{ secrets.SCHEMA_REGISTRY_URL }}
+          TF_VAR_lakehouse_bucket_name: ${{ secrets.LAKEHOUSE_BUCKET_NAME }}
+          TF_VAR_glue_scripts_bucket_name: ${{ secrets.GLUE_SCRIPTS_BUCKET_NAME }}
+          TF_VAR_flink_checkpoints_bucket_name: ${{ secrets.FLINK_CHECKPOINTS_BUCKET_NAME }}
+          TF_VAR_redshift_admin_password: ${{ secrets.TF_VAR_ADMIN_PASSWORD }}
+          TF_VAR_alert_email: ""
+        run: |
+          MODULE="${{ github.event.inputs.module }}"
+          echo "Running targeted plan for module: module.${MODULE}"
+          terraform plan \
+            -target="module.${MODULE}" \
+            -detailed-exitcode \
+            -input=false \
+            2>&1
