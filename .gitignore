@@ -1,0 +1,78 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials
+
+# ── Testing & coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# ── Type checking ─────────────────────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+
+# ── dbt ───────────────────────────────────────────────────────────────────────
+analytics/dbt/target/
+analytics/dbt/dbt_packages/
+analytics/dbt/logs/
+
+# ── Great Expectations ────────────────────────────────────────────────────────
+gx/uncommitted/
+
+# ── Flink build artifacts ─────────────────────────────────────────────────────
+processing/flink/*.zip
+processing/flink/*.jar
+
+# ── Terraform ─────────────────────────────────────────────────────────────────
+infrastructure/terraform/.terraform/
+infrastructure/terraform/.terraform.lock.hcl
+infrastructure/terraform/tfplan
+infrastructure/terraform/*.tfstate
+infrastructure/terraform/*.tfstate.backup
+infrastructure/terraform/override.tf
+infrastructure/terraform/override.tf.json
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── OS artifacts ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.code-workspace
+
+# ── Local data / temp ────────────────────────────────────────────────────────
+data/
+tmp/
+*.parquet
+*.avro
