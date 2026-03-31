@@ -1,0 +1,4 @@
+version: 2
+
+# Gold models reference Silver via ref() — no direct Gold sources.
+# This file is intentionally minimal; source freshness checks live in staging/sources.yml.

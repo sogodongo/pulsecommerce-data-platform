@@ -1,0 +1,43 @@
+version: 2
+
+sources:
+  - name: silver
+    description: "Silver Iceberg tables — cleansed, PII-masked, enriched."
+    database: glue_catalog
+    schema: silver
+    tables:
+      - name: enriched_events
+        description: "Deduplicated, bot-filtered, PII-masked clickstream events."
+        freshness:
+          warn_after: { count: 30, period: minute }
+          error_after: { count: 60, period: minute }
+        loaded_at_field: processed_at
+
+      - name: user_sessions
+        description: "Flink session-stitched records (15-min inactivity gap)."
+        freshness:
+          warn_after: { count: 30, period: minute }
+          error_after: { count: 60, period: minute }
+        loaded_at_field: processed_at
+
+      - name: orders_unified
+        description: "SCD Type 2 order history from Debezium CDC."
+        freshness:
+          warn_after: { count: 30, period: minute }
+          error_after: { count: 60, period: minute }
+        loaded_at_field: processed_at
+
+      - name: product_catalog
+        description: "Current product catalog — upserted every 15 min."
+        freshness:
+          warn_after: { count: 30, period: minute }
+          error_after: { count: 60, period: minute }
+        loaded_at_field: processed_at
+
+  - name: bronze
+    description: "Bronze raw tables — for dimension enrichment only."
+    database: glue_catalog
+    schema: bronze
+    tables:
+      - name: ad_attribution_raw
+        description: "Daily ad attribution data from Facebook + Google Ads."

@@ -1,0 +1,134 @@
+version: 2
+
+models:
+
+  # ── Fact tables ─────────────────────────────────────────────────────────────
+
+  - name: fct_orders
+    description: "Grain: one row per order (current state). Kimball star schema core fact."
+    columns:
+      - name: order_id
+        description: "Natural key from Silver orders_unified."
+        tests:
+          - unique
+          - not_null
+      - name: user_key
+        tests: [not_null]
+      - name: order_date
+        tests: [not_null]
+      - name: total_amount_usd
+        description: "Must be > 0 for non-cancelled orders."
+        tests:
+          - not_null
+      - name: fraud_score
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0.0
+              max_value: 1.0
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['pending','confirmed','shipped','delivered','cancelled','refunded']
+
+  - name: fct_sessions
+    description: "Grain: one row per user session."
+    columns:
+      - name: session_id
+        tests:
+          - unique
+          - not_null
+      - name: session_date
+        tests: [not_null]
+      - name: funnel_exit_stage
+        tests:
+          - accepted_values:
+              values: ['browse','product_view','add_to_cart','checkout_start','purchase']
+
+  # ── Dimension tables ────────────────────────────────────────────────────────
+
+  - name: dim_users
+    description: "User dimension — SCD Type 2. is_current=true = latest version."
+    columns:
+      - name: user_key
+        tests:
+          - unique
+          - not_null
+      - name: user_id_hashed
+        tests: [not_null]
+      - name: ltv_band
+        tests:
+          - accepted_values:
+              values: ['bronze','silver','gold','platinum']
+      - name: is_current
+        tests: [not_null]
+
+  - name: dim_products
+    description: "Product dimension — full refresh from silver.product_catalog."
+    columns:
+      - name: product_key
+        tests:
+          - unique
+          - not_null
+      - name: sku
+        tests:
+          - unique
+          - not_null
+      - name: price_band
+        tests:
+          - accepted_values:
+              values: ['budget','mid','premium','luxury']
+
+  - name: dim_date
+    description: "Date dimension 2020–2030."
+    columns:
+      - name: date_key
+        tests:
+          - unique
+          - not_null
+      - name: full_date
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_channels
+    description: "Marketing channel dimension."
+    columns:
+      - name: channel_key
+        tests:
+          - unique
+          - not_null
+      - name: channel_group
+        tests:
+          - accepted_values:
+              values: ['Paid Search','Paid Social','Organic Social','Email','Direct','Referral','Organic Search','Other']
+
+  - name: dim_geography
+    description: "Country-level geography dimension."
+    columns:
+      - name: geo_key
+        tests:
+          - unique
+          - not_null
+      - name: country
+        tests:
+          - unique
+          - not_null
+      - name: region
+        tests:
+          - accepted_values:
+              values: ['EMEA','APAC','AMER','LATAM','OTHER']
+
+  # ── Aggregations ─────────────────────────────────────────────────────────────
+
+  - name: agg_daily_metrics
+    description: "Pre-aggregated daily KPIs. One row per business date."
+    columns:
+      - name: metric_date
+        tests:
+          - unique
+          - not_null
+      - name: gross_revenue_usd
+        tests: [not_null]
+      - name: overall_conversion_rate
+        description: "Between 0.0 and 1.0."

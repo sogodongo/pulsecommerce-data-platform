@@ -1,0 +1,50 @@
+pulsecommerce:
+  target: prod
+  outputs:
+    prod:
+      type: glue
+      role_arn: "arn:aws:iam::{{ env_var('AWS_ACCOUNT_ID') }}:role/pulsecommerce-glue-role"
+      region: "{{ env_var('AWS_REGION', 'us-east-1') }}"
+      workers: 10
+      worker_type: G.1X
+      worker_type_autoscaling: true
+      min_workers: 5
+      max_workers: 30
+      schema: gold
+      database: gold
+      session_provisioning_timeout_in_seconds: 300
+      idle_timeout: 60
+      glue_version: "5.0"
+      extra_jars:
+        - "s3://pulsecommerce-glue-scripts-{{ env_var('AWS_ACCOUNT_ID') }}/jars/iceberg-spark-runtime.jar"
+      extra_py_files:
+        - "s3://pulsecommerce-glue-scripts-{{ env_var('AWS_ACCOUNT_ID') }}/deps/dbt_glue_deps.zip"
+      conf:
+        spark.sql.extensions: "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+        spark.sql.catalog.glue_catalog: "org.apache.iceberg.spark.SparkCatalog"
+        spark.sql.catalog.glue_catalog.catalog-impl: "org.apache.iceberg.aws.glue.GlueCatalog"
+        spark.sql.catalog.glue_catalog.warehouse: "s3://pulsecommerce-lakehouse-{{ env_var('AWS_ACCOUNT_ID') }}/"
+        spark.sql.catalog.glue_catalog.io-impl: "org.apache.iceberg.aws.s3.S3FileIO"
+        spark.sql.adaptive.enabled: "true"
+        spark.sql.adaptive.coalescePartitions.enabled: "true"
+        spark.sql.adaptive.skewJoin.enabled: "true"
+      # OpenLineage integration — column-level lineage to Marquez
+      meta:
+        openlineage:
+          enabled: true
+          transport:
+            type: http
+            url: "http://marquez.internal:5000"
+
+    # Separate profile target for Redshift Serverless (used by BI dashboards)
+    redshift:
+      type: redshift
+      host: "{{ env_var('REDSHIFT_WORKGROUP') }}.{{ env_var('AWS_ACCOUNT_ID') }}.{{ env_var('AWS_REGION') }}.redshift-serverless.amazonaws.com"
+      port: 5439
+      dbname: pulsecommerce
+      schema: gold
+      user: "{{ env_var('REDSHIFT_USER') }}"
+      password: "{{ env_var('REDSHIFT_PASSWORD') }}"
+      threads: 8
+      connect_timeout: 30
+      sslmode: require

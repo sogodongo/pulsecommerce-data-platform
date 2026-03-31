@@ -1,0 +1,78 @@
+name: pulsecommerce
+version: "1.0.0"
+config-version: 2
+
+profile: pulsecommerce
+
+model-paths:       ["models"]
+analysis-paths:    ["analyses"]
+test-paths:        ["tests"]
+seed-paths:        ["seeds"]
+macro-paths:       ["macros"]
+snapshot-paths:    ["snapshots"]
+docs-paths:        ["docs"]
+
+target-path:       "target"
+clean-targets:     ["target", "dbt_packages"]
+
+# ── Global model defaults ────────────────────────────────────────────────────
+models:
+  pulsecommerce:
+
+    # Staging: ephemeral views — no physical materialisation, just logic aliases
+    staging:
+      +materialized: view
+      +schema: staging
+      +tags: ["staging"]
+
+    # Silver: incremental Iceberg merges — references for Gold joins
+    silver:
+      +materialized: incremental
+      +incremental_strategy: merge
+      +file_format: iceberg
+      +on_schema_change: sync_all_columns
+      +schema: silver
+      +tags: ["silver"]
+
+    # Gold: incremental Iceberg — star schema + aggregations
+    gold:
+      +materialized: incremental
+      +incremental_strategy: merge
+      +file_format: iceberg
+      +on_schema_change: sync_all_columns
+      +schema: gold
+      +tags: ["gold"]
+
+      # Dimension tables use full-refresh for correctness (SCD2 handled by snapshots)
+      dim_date:
+        +materialized: table
+        +file_format: iceberg
+
+# ── Snapshots (SCD Type 2 — dim_users) ──────────────────────────────────────
+snapshots:
+  pulsecommerce:
+    +target_schema: gold
+    +file_format: iceberg
+    +strategy: check
+    +unique_key: user_id_hashed
+
+# ── Seeds ────────────────────────────────────────────────────────────────────
+seeds:
+  pulsecommerce:
+    +schema: gold
+    dim_date_seed:
+      +column_types:
+        date_key: bigint
+        full_date: date
+
+# ── Variables ────────────────────────────────────────────────────────────────
+vars:
+  # Lookback window for incremental models — how far back to re-process
+  # to catch late-arriving Silver records. Override per environment.
+  incremental_lookback_hours: 2
+
+  # Fraud score threshold used in Gold models
+  fraud_score_threshold: 0.7
+
+  # PulseCommerce fiscal year offset (starts Feb 1)
+  fiscal_year_start_month: 2
